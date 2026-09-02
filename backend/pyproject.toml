@@ -1,0 +1,81 @@
+[project]
+name = "avs-global-backend"
+version = "1.0.0"
+description = "AVS Global Ship Supply Management System - Enterprise Backend"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi==0.109.0",
+    "uvicorn[standard]==0.27.0",
+    "sqlalchemy==2.0.25",
+    "asyncpg==0.29.0",
+    "alembic==1.13.1",
+    "pydantic==2.5.3",
+    "pydantic-settings==2.1.0",
+    "python-jose[cryptography]==3.3.0",
+    "passlib[bcrypt]==1.7.4",
+    "python-multipart==0.0.6",
+    "redis==5.0.1",
+    "celery==5.3.6",
+    "httpx==0.26.0",
+    "email-validator==2.1.0.post1",
+    "structlog==24.1.0",
+    "prometheus-client==0.19.0",
+    "opentelemetry-api==1.22.0",
+    "opentelemetry-sdk==1.22.0",
+    "opentelemetry-instrumentation-fastapi==0.42b0",
+    "opentelemetry-instrumentation-sqlalchemy==0.42b0",
+    "opentelemetry-exporter-otlp==1.22.0",
+    "tenacity==8.2.3",
+    "pyyaml==6.0.1",
+    "cryptography==42.0.2",
+    "argon2-cffi==23.1.0",
+    "slowapi==0.1.9",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest==7.4.4",
+    "pytest-asyncio==0.23.3",
+    "pytest-cov==4.1.0",
+    "httpx==0.26.0",
+    "faker==22.0.0",
+    "ruff==0.1.14",
+    "mypy==1.7.1",
+    "pre-commit==3.6.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+select = ["E", "F", "I", "N", "W", "UP", "B", "C4", "ANN", "SIM", "PIE", "T20", "TD", "PTH", "ERA", "RET", "ICN", "ARG", "PTH"]
+ignore = ["S101", "ANN101", "ANN102", "ANN201", "ANN202", "ANN204", "ARG001", "ARG002"]
+fixable = ["F", "I", "N", "W", "UP", "B", "C4", "SIM", "PIE", "T20", "TD", "PTH", "ERA", "RET", "ICN", "ARG"]
+format = { quote-style = "double", indent-style = "space" }
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "S106", "S311"]
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+strict_optional = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+
+[tool.alembic]
+script_location = "app/db/migrations"
+prepend_sys_path = true

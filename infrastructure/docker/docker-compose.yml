@@ -1,0 +1,111 @@
+name: avs-global
+
+services:
+  # ─── PostgreSQL (primary) ──────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: avs-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-avs}
+      POSTGRES_USER: ${POSTGRES_USER:-avs}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-avs-dev-password}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-avs} -d ${POSTGRES_DB:-avs}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─── Redis (cache + IDS/IPS sliding windows) ──────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: avs-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ─── Backend (FastAPI + Uvicorn) ───────────────────────────────────────
+  backend:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: avs-backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      ENVIRONMENT: docker
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-avs}:${POSTGRES_PASSWORD:-avs-dev-password}@postgres:5432/${POSTGRES_DB:-avs}
+      SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-avs}:${POSTGRES_PASSWORD:-avs-dev-password}@postgres:5432/${POSTGRES_DB:-avs}
+      REDIS_URL: redis://redis:6379/0
+      JWT_PRIVATE_KEY_PATH: /app/secrets/jwt-private.pem
+      JWT_PUBLIC_KEY_PATH: /app/secrets/jwt-public.pem
+      CORS_ORIGINS: "http://localhost:5173,http://localhost"
+    ports:
+      - "${BACKEND_PORT:-8000}:8000"
+    volumes:
+      - jwt-secrets:/app/secrets
+    command: >
+      sh -c "alembic upgrade head &&
+             python scripts/seed.py --skip-if-populated &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+
+  # ─── AIS Data Simulator (synthetic traffic generator) ─────────────────
+  # Reuses the backend's Dockerfile (it has the same Python deps).
+  # The sim package is COPYed in by the Dockerfile. The CMD is
+  # overridden below to run the simulator instead of uvicorn.
+  sim:
+    build:
+      context: ../../backend
+      dockerfile: Dockerfile
+    container_name: avs-sim
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    environment:
+      SIM_BACKEND_URL: http://backend:8000
+      SIM_SCENARIO: ${SIM_SCENARIO:-default_med}
+      SIM_SEED: ${SIM_SEED:-42}
+      SIM_SIM_TIME_SCALE: ${SIM_SIM_TIME_SCALE:-60}
+      SIM_FLUSH_INTERVAL_SECONDS: ${SIM_FLUSH_INTERVAL_SECONDS:-5}
+      SIM_LOG_LEVEL: ${SIM_LOG_LEVEL:-INFO}
+    command: >
+      sh -c "python -m sim.runner
+             --scenario $${SIM_SCENARIO}
+             --seed $${SIM_SEED}
+             --backend-url $${SIM_BACKEND_URL}"
+    # No ports exposed — the sim is outbound-only (it POSTs to the
+    # backend over the docker network).
+
+  # ─── Frontend (Vite-built static assets via Nginx) ────────────────────
+  frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE: ${VITE_API_BASE:-/api}
+    container_name: avs-frontend
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      - "${FRONTEND_PORT:-5173}:80"
+    environment:
+      BACKEND_URL: http://backend:8000
+
+volumes:
+  pgdata:
+  jwt-secrets:

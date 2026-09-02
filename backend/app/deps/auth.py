@@ -1,0 +1,93 @@
+"""
+FastAPI dependencies for auth, RBAC, and database sessions.
+"""
+from __future__ import annotations
+
+from typing import Annotated, AsyncGenerator, Callable
+
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import OAuth2PasswordBearer
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.config import settings
+from app.core.security import TokenData, decode_token
+from app.db.session import get_db, get_read_db
+
+oauth2_scheme = OAuth2PasswordBearer(
+    tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False
+)
+
+
+async def db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with get_db() as s:
+        yield s
+
+
+async def read_db_session() -> AsyncGenerator[AsyncSession, None]:
+    async with get_read_db() as s:
+        yield s
+
+
+DBSession = Annotated[AsyncSession, Depends(db_session)]
+ReadDBSession = Annotated[AsyncSession, Depends(read_db_session)]
+
+
+async def get_current_token(
+    request: Request,
+    token: Annotated[str | None, Depends(oauth2_scheme)],
+) -> TokenData:
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = decode_token(token)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+    return TokenData.from_payload(payload)
+
+
+CurrentToken = Annotated[TokenData, Depends(get_current_token)]
+
+
+def require_permission(resource: str, action: str, scope: str = "own") -> Callable:
+    """Dependency factory that enforces a (resource, action, scope) permission."""
+
+    async def _checker(token: CurrentToken) -> TokenData:
+        # token.has_any_permission handles the scope hierarchy
+        # We allow matching at any broader scope: own < vessel < fleet < global
+        scope_order = ["own", "vessel", "fleet", "global"]
+        target = scope_order.index(scope)
+        for s in scope_order[target:]:
+            if token.has_permission(resource, action, s):
+                return token
+        # Fallback: any role-level override
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Missing permission: {resource}:{action}:{scope}",
+        )
+
+    return _checker
+
+
+def require_role(*role_names: str) -> Callable:
+    async def _checker(token: CurrentToken) -> TokenData:
+        if not token.has_any_role(list(role_names)):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of roles: {', '.join(role_names)}",
+            )
+        return token
+
+    return _checker

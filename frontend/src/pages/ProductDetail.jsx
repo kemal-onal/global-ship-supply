@@ -1,0 +1,150 @@
+import { useQuery } from '@tanstack/react-query'
+import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, Loader2, Package, Tag, Truck, ShieldCheck, Hash, Ruler } from 'lucide-react'
+
+import { apiGet } from '../api/client'
+
+export default function ProductDetailPage() {
+  const { id } = useParams()
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['product', id],
+    queryFn: () => apiGet(`/catalog/products/${id}`),
+  })
+
+  if (isLoading) return (
+    <div className="p-12 text-center">
+      <Loader2 className="w-6 h-6 animate-spin inline-block" />
+    </div>
+  )
+  if (error) return <div className="p-12 text-center text-rose-500">{error.message}</div>
+  if (!data) return null
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 max-w-5xl mx-auto">
+      <Link to="/catalog" className="inline-flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-700 dark:hover:text-slate-300 mb-4">
+        <ArrowLeft className="w-4 h-4" /> Back to catalog
+      </Link>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {/* Main */}
+        <div className="md:col-span-2 space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-6">
+            <div className="flex items-center gap-2 mb-3">
+              <span className="text-xs font-mono px-2 py-0.5 rounded bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
+                {data.sku}
+              </span>
+              {data.impa_code && (
+                <span className="text-xs font-mono px-2 py-0.5 rounded bg-blue-100 dark:bg-blue-900/30 text-blue-700">
+                  IMPA {data.impa_code}
+                </span>
+              )}
+              {data.issa_code && (
+                <span className="text-xs font-mono px-2 py-0.5 rounded bg-violet-100 dark:bg-violet-900/30 text-violet-700">
+                  ISSA {data.issa_code}
+                </span>
+              )}
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900 dark:text-white">{data.name}</h1>
+            {data.description && (
+              <p className="mt-2 text-slate-600 dark:text-slate-300">{data.description}</p>
+            )}
+
+            <div className="mt-6 flex items-baseline gap-3">
+              <div className="text-3xl font-bold text-slate-900 dark:text-white">
+                {data.currency} {parseFloat(data.unit_price).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              </div>
+              <div className="text-sm text-slate-500">/ {data.unit}</div>
+            </div>
+            <div className="text-xs text-slate-500 mt-1">
+              Min order qty: {data.min_order_qty} · Lead time: {data.lead_time_days} days
+            </div>
+
+            {data.tags && data.tags.length > 0 && (
+              <div className="mt-5 flex flex-wrap gap-1.5">
+                {data.tags.map(t => (
+                  <span key={t} className="text-xs px-2 py-0.5 rounded-full bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300">
+                    <Tag className="w-3 h-3 inline-block mr-1 -mt-0.5" />{t}
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {data.specifications?.length > 0 && (
+            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+              <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+                <Ruler className="w-4 h-4" /> Specifications
+              </h2>
+              <div className="grid grid-cols-2 gap-3">
+                {data.specifications.map(s => (
+                  <div key={s.key} className="flex justify-between text-sm border-b border-slate-100 dark:border-slate-800 pb-2">
+                    <span className="text-slate-500">{s.key}</span>
+                    <span className="font-medium">{s.value}{s.unit && ` ${s.unit}`}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Sidebar */}
+        <div className="space-y-4">
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+            <h2 className="text-sm font-semibold mb-3">Availability</h2>
+            <div className="space-y-2 text-sm">
+              <Row label="Status" value={
+                data.in_stock
+                  ? <span className="text-emerald-600 font-medium">In stock ({data.stock_qty})</span>
+                  : <span className="text-rose-600 font-medium">Out of stock</span>
+              } />
+              <Row label="Min order" value={data.min_order_qty} />
+              <Row label="Lead time" value={`${data.lead_time_days} days`} />
+              <Row label="Manufacturer" value={data.manufacturer} />
+            </div>
+            <Link
+              to={`/orders/new?product=${data.id}`}
+              className="mt-4 w-full inline-flex items-center justify-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg"
+            >
+              <Truck className="w-4 h-4" /> Add to order
+            </Link>
+          </div>
+
+          <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+            <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+              <Hash className="w-4 h-4" /> Cross-references
+            </h2>
+            <div className="space-y-2 text-sm">
+              <Row label="HS code" value={data.hs_code} />
+              <Row label="Barcode" value={data.barcode} />
+              <Row label="Part #" value={data.part_number} />
+            </div>
+          </div>
+
+          {(data.is_hazardous || data.is_perishable) && (
+            <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 rounded-xl p-5">
+              <h2 className="text-sm font-semibold text-amber-800 dark:text-amber-300 mb-2 flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4" /> Compliance
+              </h2>
+              <ul className="text-sm text-amber-700 dark:text-amber-300 space-y-1">
+                {data.is_hazardous && <li>• Hazardous material (IMDG)</li>}
+                {data.is_perishable && <li>• Perishable — shelf life: {data.shelf_life_days} days</li>}
+                {data.requires_certificates?.map(c => (
+                  <li key={c}>• Requires {c} certificate</li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function Row({ label, value }) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-slate-500">{label}</span>
+      <span className="font-medium text-slate-900 dark:text-white">{value || '—'}</span>
+    </div>
+  )
+}

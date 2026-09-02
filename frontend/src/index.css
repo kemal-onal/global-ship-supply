@@ -1,0 +1,108 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light dark;
+  font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+}
+
+html, body, #root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background-color: #f8fafc;
+  color: #0f172a;
+  -webkit-font-smoothing: antialiased;
+}
+
+.dark body {
+  background-color: #020617;
+  color: #f1f5f9;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+.dark ::-webkit-scrollbar-thumb { background: #1e293b; }
+.dark ::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+/* Loading dots */
+@keyframes loadingDots {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+.loading-dot {
+  animation: loadingDots 1.4s infinite;
+}
+.loading-dot:nth-child(2) { animation-delay: 0.2s; }
+.loading-dot:nth-child(3) { animation-delay: 0.4s; }
+
+/* Data grid row hover */
+.data-grid-row:hover {
+  background-color: rgba(59, 130, 246, 0.05);
+}
+.dark .data-grid-row:hover {
+  background-color: rgba(59, 130, 246, 0.1);
+}
+
+/* Offline indicator pulse */
+@keyframes offlinePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.offline-pulse {
+  animation: offlinePulse 2s ease-in-out infinite;
+}
+
+/* Leaflet map — keep panes below header dropdowns (z-10/20) */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  font-family: var(--font-sans);
+  background: #0b1220;
+}
+.leaflet-pane,
+.leaflet-top,
+.leaflet-bottom {
+  z-index: 0;
+}
+.leaflet-control {
+  z-index: 0;
+}
+
+/* Map shell — fills viewport minus the page header */
+.map-shell {
+  height: calc(100vh - 9rem);
+  min-height: 480px;
+  border-radius: 0.75rem;
+  overflow: hidden;
+  border: 1px solid rgb(226 232 240);
+}
+.dark .map-shell {
+  border-color: rgb(30 41 59);
+}
+
+/* Vessel marker tooltip styling */
+.leaflet-tooltip.vessel-tip {
+  background: rgba(15, 23, 42, 0.92);
+  color: #f1f5f9;
+  border: 1px solid rgba(59, 130, 246, 0.5);
+  border-radius: 6px;
+  font-size: 11px;
+  padding: 6px 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+.leaflet-tooltip.vessel-tip::before {
+  border-top-color: rgba(59, 130, 246, 0.5);
+}
