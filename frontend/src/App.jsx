@@ -15,6 +15,7 @@ import FleetMapPage from './pages/FleetMap'
 import PortsPage from './pages/Ports'
 import CateringPage from './pages/Catering'
 import RFQPage from './pages/RFQ'
+import MarketSimPage from './pages/MarketSim'
 import CustomsPage from './pages/Customs'
 import SyncPage from './pages/Sync'
 import SettingsPage from './pages/Settings'
@@ -50,6 +51,8 @@ export default function App() {
         <Route path="/ports" element={<PortsPage />} />
         <Route path="/catering" element={<CateringPage />} />
         <Route path="/rfq" element={<RFQPage />} />
+        <Route path="/market-sim" element={<MarketSimPage />} />
+        <Route path="/market-sim/:rfqId" element={<MarketSimPage />} />
         <Route path="/customs" element={<CustomsPage />} />
         <Route path="/sync" element={<SyncPage />} />
         <Route path="/settings" element={<SettingsPage />} />

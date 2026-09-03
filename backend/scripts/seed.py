@@ -266,8 +266,9 @@ async def seed_roles_and_permissions(db: AsyncSession) -> dict[str, Role]:
             "vessels:read:fleet", "ports:read:global", "products:read:global",
             "orders:create:vessel", "orders:read:vessel", "orders:update:vessel",
             "orders:approve:vessel", "rfq:create:own", "rfq:read:own",
-            "rfq:manage:vessel", "quotes:compare:own", "regulations:read:global",
-            "customs:check:own", "sync:manage:own", "reports:read:fleet",
+            "rfq:manage:vessel", "rfq:simulate:own", "quotes:compare:own",
+            "regulations:read:global", "customs:check:own", "sync:manage:own",
+            "reports:read:fleet",
         ],
         "chief_steward": [
             "vessels:read:own", "catering:create:own", "catering:read:own",

@@ -8,7 +8,7 @@ The search endpoint is the heart of the platform. It uses:
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.deps.auth import CurrentToken, ReadDBSession, require_permission
@@ -19,6 +19,7 @@ from app.models.product import (
     ProductCategory,
     ProductStatus,
 )
+from app.models.supplier import ProductSupplier
 from app.services.search import SearchFilters, search_products
 
 router = APIRouter()
@@ -57,6 +58,93 @@ async def list_products(
         sort=sort,
     )
     return await search_products(db, filters)
+
+
+@router.get("/rfq-eligible")
+async def list_rfq_eligible(
+    db: ReadDBSession,
+    token: CurrentToken,
+    min_suppliers: int = Query(2, ge=1, le=20, description="Minimum distinct suppliers per product"),
+    q: str | None = Query(None, description="Optional name/SKU substring filter"),
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    """Products that can actually trigger a bid war.
+
+    Filters down to in-stock, ACTIVE products that have at least
+    `min_suppliers` distinct suppliers offering them. This is the
+    curated list surfaced in the New-Order product picker so a
+    purchasing officer can't pick a product nobody can quote on.
+
+    Each row includes `supplier_count` (the number of suppliers
+    currently able to bid) so the UI can sort/badgify it.
+    """
+    # Subquery: products grouped by supplier count, filtered to >=min
+    sq = (
+        select(
+            ProductSupplier.product_id.label("pid"),
+            func.count(func.distinct(ProductSupplier.supplier_id)).label("sc"),
+        )
+        .group_by(ProductSupplier.product_id)
+        .having(func.count(func.distinct(ProductSupplier.supplier_id)) >= min_suppliers)
+        .subquery()
+    )
+
+    total = (await db.execute(
+        select(func.count())
+        .select_from(Product)
+        .join(sq, sq.c.pid == Product.id)
+        .where(Product.is_deleted.is_(False))
+        .where(Product.in_stock.is_(True))
+        .where(Product.status == ProductStatus.ACTIVE)
+    )).scalar_one()
+
+    stmt = (
+        select(
+            Product.id,
+            Product.sku,
+            Product.name,
+            Product.short_name,
+            Product.unit_price,
+            Product.currency,
+            Product.unit,
+            Product.in_stock,
+            Product.stock_qty,
+            Product.lead_time_days,
+            Product.manufacturer,
+            sq.c.sc.label("supplier_count"),
+        )
+        .join(sq, sq.c.pid == Product.id)
+        .where(Product.is_deleted.is_(False))
+        .where(Product.in_stock.is_(True))
+        .where(Product.status == ProductStatus.ACTIVE)
+        .order_by(sq.c.sc.desc(), Product.name.asc())
+        .limit(limit)
+        .offset(offset)
+    )
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(or_(Product.name.ilike(like), Product.sku.ilike(like)))
+
+    rows = (await db.execute(stmt)).mappings().all()
+    # Normalize Decimal to float + enum to string so the JSON response is plain
+    items = []
+    for r in rows:
+        items.append({
+            "id": str(r["id"]),
+            "sku": r["sku"],
+            "name": r["name"],
+            "short_name": r["short_name"],
+            "unit_price": float(r["unit_price"]),
+            "currency": r["currency"],
+            "unit": r["unit"].value if hasattr(r["unit"], "value") else r["unit"],
+            "in_stock": r["in_stock"],
+            "stock_qty": r["stock_qty"],
+            "lead_time_days": r["lead_time_days"],
+            "manufacturer": r["manufacturer"],
+            "supplier_count": int(r["supplier_count"]),
+        })
+    return {"items": items, "total": total, "min_suppliers": min_suppliers}
 
 
 @router.get("/products/{product_id}")

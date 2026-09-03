@@ -64,11 +64,13 @@
 6. [API tour](#api-tour)
 7. [AIS simulator](#ais-simulator)
 8. [Demo flows](#demo-flows)
-9. [Notifications](#notifications)
-10. [Troubleshooting](#troubleshooting)
-11. [Testing](#testing)
-12. [Production checklist](#production-checklist)
-13. [License](#license)
+9. [Demo gotchas](#demo-gotchas)
+10. [Notifications](#notifications)
+11. [Troubleshooting](#troubleshooting)
+12. [Testing](#testing)
+13. [Production checklist](#production-checklist)
+14. [Contributor notes](#contributor-notes)
+15. [License](#license)
 
 For the project story, design rationale, and what's next, see
 [`REPORT.md`](./REPORT.md). For deep-dive docs, see
@@ -684,8 +686,11 @@ The simulator's design and the rationale behind the
 4. Add 2–3 products from the right-hand picker
 5. Submit
 6. /orders/{id} → see customs evaluation, status = draft
-7. Click "Send RFQ to suppliers" → status = rfq_in_progress
-8. (Log in as the order's assigned_to user) → bell badge increments
+7. Click "Submit for approval" → status = pending_approval
+   (only `pending_approval` orders are RFQ-eligible; the RFQ page's
+   order picker filters to this status)
+8. Then click "Send RFQ to suppliers" → status = rfq_in_progress
+9. (Log in as the order's assigned_to user) → bell badge increments
    → open it → see "Order ORD-… is now rfq in progress"
 ```
 
@@ -716,6 +721,9 @@ The simulator's design and the rationale behind the
 
 ```
 1. /rfq → pick a pending-approval order → "Send RFQ"
+   (the new RFQ row appears with status = `sent`; eligible suppliers
+   at the destination port receive email invitations with private
+   quote links)
 2. (As a supplier) — out of scope for the UI in this MVP — submit a quote
 3. Back as purchaser → /rfq → click "Compare bids"
 4. See ranked quotes with weighted scores
@@ -741,6 +749,46 @@ The simulator's design and the rationale behind the
    WHERE mmsi = '901000001' AND event_type = 'position_report'
    ORDER BY event_ts DESC LIMIT 10;
 ```
+
+---
+
+## Demo gotchas
+
+A few things that surprised us the first time we walked through the
+demo. Skim this before a live walkthrough.
+
+### `draft` orders are not RFQ-eligible
+
+The /rfq page's order picker is filtered to `status = pending_approval`.
+A freshly created order sits in `draft` until you click **Submit for
+approval** on the order detail page. This is intentional (so the
+purchaser can iterate on a draft without spamming suppliers) but
+nothing in the UI shouts at you about it.
+
+### Rotterdam only has one eligible supplier in the seed
+
+`/catalog/rfq-eligible` (and therefore the "X bid-eligible" pill in
+the order-create picker) only counts suppliers that have a
+`SupplierPort` row for the destination port. Rotterdam's seed data
+only has one supplier there, so orders going to Rotterdam won't
+generate a competitive bid war. For the demo, pick a port with
+3+ eligible suppliers — Singapore, Hamburg, Piraeus, Algeciras all
+work.
+
+### 1-product orders only get 1 bid
+
+`SupplierQuote` has a `UniqueConstraint("rfq_id", "supplier_id")` —
+one bid per supplier per RFQ, ever. The marketplace simulator
+respects this. Add 2–3 products to an order for a richer leaderboard
+that actually shows the weighted scoring doing something interesting.
+
+### RFQ status values
+
+The full set is `draft | open | sent | closed | awarded | cancelled`.
+`compare_quotes` flips the RFQ to `awarded` when run with
+`save=True`. After that the endpoint returns 400 on re-simulation.
+For what-if exploration, the marketplace simulator endpoint accepts
+`?dry_run=true` to skip the state transition.
 
 ---
 
@@ -1037,6 +1085,37 @@ Before you ship this anywhere, do these things:
 - [ ] Replace the in-app per-user `notifications` table polling with
       a WebSocket / SSE channel when your traffic profile demands it
       (the current 30 s polling is fine for thousands of users, not millions)
+
+---
+
+## Contributor notes
+
+A couple of conventions this project follows that aren't obvious
+from the code alone.
+
+### Two readmes, two audiences
+
+This folder's `readme.md` is the **GitHub-visitor** version:
+polished, badge row, marketing-flavored highlights, demo accounts
+spelled out. The internal development copy lives one folder up at
+`mock-up-backup/readme.md` and has a more personal tone (demo-day
+reminders, "what tripped me up" notes, internal context).
+
+They are **not** mirrors of each other. The backup folder is the
+active dev workspace; this folder is what gets pushed to GitHub.
+Content gets reviewed and selectively synced, not bulk-copied. The
+project story lives in [`REPORT.md`](./REPORT.md) and only here.
+
+### How the marketplace simulator fits
+
+The `sim/` package contains two distinct subsystems: the **AIS
+simulator** (background process generating synthetic vessel traffic)
+and the **marketplace simulator** (inline supplier-bid simulation
+that runs synchronously on `POST /api/v1/rfq/{id}/simulate`). The
+AIS sim is long-lived and tick-based; the marketplace sim is
+request-scoped and completes in <2s. They share a directory
+because the test scaffolding and CLI patterns are similar, not
+because they share runtime architecture.
 
 ---
 

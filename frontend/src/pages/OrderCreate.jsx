@@ -26,8 +26,8 @@ export default function OrderCreatePage() {
     queryFn: () => apiGet('/ports'),
   })
   const { data: products } = useQuery({
-    queryKey: ['products', 'browse'],
-    queryFn: () => apiGet('/catalog/products', { query: { limit: 100, in_stock: true } }),
+    queryKey: ['products', 'rfq-eligible'],
+    queryFn: () => apiGet('/catalog/rfq-eligible', { query: { limit: 100 } }),
   })
 
   const [vesselSel, setVesselSel] = useState(vesselId || '')
@@ -239,7 +239,18 @@ export default function OrderCreatePage() {
 
         {/* Product picker */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5 h-fit lg:sticky lg:top-4">
-          <h2 className="text-sm font-semibold mb-3">Add product</h2>
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="text-sm font-semibold">Add product</h2>
+            {products?.total > 0 && (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-medium bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                title="Products with at least 2 active suppliers — these can actually trigger a bid war"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                {products.total} bid-eligible
+              </span>
+            )}
+          </div>
           <div className="relative mb-3">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
@@ -261,7 +272,12 @@ export default function OrderCreatePage() {
               >
                 <div className="flex items-center justify-between">
                   <div className="font-mono text-slate-500">{p.sku}</div>
-                  <Plus className="w-3 h-3 text-blue-500" />
+                  <div className="flex items-center gap-1.5">
+                    <span className="inline-flex items-center gap-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                      {p.supplier_count}<span className="opacity-60">bidders</span>
+                    </span>
+                    <Plus className="w-3 h-3 text-blue-500" />
+                  </div>
                 </div>
                 <div className="text-sm font-medium truncate">{p.name}</div>
                 <div className="text-slate-500">{p.currency} {parseFloat(p.unit_price).toFixed(2)}</div>

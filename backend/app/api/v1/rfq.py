@@ -1,9 +1,10 @@
 """RFQ & Bidding routes — create RFQ, list quotes, compare, choose winner."""
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.deps.auth import CurrentToken, DBSession, ReadDBSession
 from app.models.audit import AuditAction, AuditLog
@@ -16,6 +17,7 @@ from app.models.supplier import (
     SupplierQuote,
     SupplierStatus,
 )
+from app.services.market_sim import run_market_sim
 from app.services.rfq import build_rfq_for_order, compare_quotes, submit_quote
 
 router = APIRouter()
@@ -51,7 +53,11 @@ async def list_rfqs(
     limit: int = 50,
     offset: int = 0,
 ):
-    stmt = select(RFQ).order_by(RFQ.created_at.desc())
+    stmt = (
+        select(RFQ)
+        .options(selectinload(RFQ.order), selectinload(RFQ.items))
+        .order_by(RFQ.created_at.desc())
+    )
     if order_id:
         stmt = stmt.where(RFQ.order_id == order_id)
     if status:
@@ -121,7 +127,16 @@ async def get_rfq(
     db: ReadDBSession,
     token: CurrentToken,
 ):
-    rfq = (await db.execute(select(RFQ).where(RFQ.id == rfq_id))).scalar_one_or_none()
+    rfq = (
+        await db.execute(
+            select(RFQ)
+            .options(
+                selectinload(RFQ.items),
+                selectinload(RFQ.quotes).selectinload(SupplierQuote.supplier),
+            )
+            .where(RFQ.id == rfq_id)
+        )
+    ).scalar_one_or_none()
     if not rfq:
         raise HTTPException(status_code=404, detail="RFQ not found")
     return {
@@ -207,5 +222,82 @@ async def compare_rfq(
     if not rfq:
         raise HTTPException(status_code=404, detail="RFQ not found")
     result = await compare_quotes(db, rfq, weights=payload.weights, save=payload.save)
+    await db.commit()
+    return result
+
+
+# --- Marketplace simulator ---------------------------------------------
+
+
+class SimulateIn(BaseModel):
+    """Request body for ``POST /rfq/{rfq_id}/simulate``.
+
+    The seed controls bid-war replay (same seed + same RFQ = same bids).
+    The weights override the comparison scoring. The
+    counter_offer_terms nudge round-2 bids downward.
+    """
+
+    seed: int = Field(default=42, ge=0, le=2**31 - 1)
+    weights: dict[str, float] | None = None
+    counter_offer_terms: dict[str, Any] | None = None
+
+
+@router.post("/{rfq_id}/simulate")
+async def simulate_bidding(
+    rfq_id: str,
+    payload: SimulateIn,
+    db: DBSession,
+    token: CurrentToken,
+    dry_run: bool = Query(
+        default=True,
+        description=(
+            "If true, bids are simulated and the comparison is run, but "
+            "the RFQ is NOT transitioned to AWARDED and is_awarded is "
+            "cleared. This lets the demo's what-if slider iterate "
+            "without locking the RFQ. Set to false to commit the winner."
+        ),
+    ),
+):
+    """Run a marketplace simulator round for this RFQ.
+
+    Round 1: every eligible supplier's agent bids.
+    Round 2 (counter-offer): only the in-contention agents re-bid, with
+    prices potentially squeezed by the counter-offer terms.
+
+    Each call writes a batch of rows to ``market_sim_events`` so the
+    frontend can render a timeline by polling the table.
+    """
+    if not token.has_permission("rfq:simulate:own"):
+        raise HTTPException(
+            status_code=403,
+            detail="Missing permission: rfq:simulate:own",
+        )
+
+    from app.models.supplier import SupplierQuote
+
+    rfq = (await db.execute(
+        select(RFQ)
+        .where(RFQ.id == rfq_id)
+        .options(
+            selectinload(RFQ.items),
+            selectinload(RFQ.quotes).selectinload(SupplierQuote.supplier),
+        )
+    )).scalar_one_or_none()
+    if not rfq:
+        raise HTTPException(status_code=404, detail="RFQ not found")
+    if rfq.status == RFQStatus.CANCELLED or rfq.status == RFQStatus.EXPIRED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"RFQ is {rfq.status.value}; cannot simulate bidding",
+        )
+
+    result = await run_market_sim(
+        db,
+        rfq,
+        seed=payload.seed,
+        weights=payload.weights,
+        counter_offer_terms=payload.counter_offer_terms,
+        dry_run=dry_run,
+    )
     await db.commit()
     return result

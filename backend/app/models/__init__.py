@@ -41,6 +41,7 @@ from app.models.supplier import (
     QuoteItem,
     BidComparison,
 )
+from app.models.market_sim import MarketSimEvent, MarketSimEventType
 from app.models.port import (
     Country,
     Port,

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Gavel, Loader2, TrendingUp, ChevronRight } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Gavel, Loader2, TrendingUp, ChevronRight, BriefcaseBusiness } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 import { apiGet, apiPost } from '../api/client'
@@ -14,6 +15,7 @@ const STATUS_COLORS = {
 }
 
 export default function RFQPage() {
+  const navigate = useNavigate()
   const qc = useQueryClient()
   const { data: rfqs, isLoading } = useQuery({
     queryKey: ['rfqs'],
@@ -149,13 +151,24 @@ export default function RFQPage() {
                     </span>
                   </td>
                   <td className="px-4 py-2.5 text-right">
-                    <button
-                      onClick={() => compareRfq.mutate(r.id)}
-                      disabled={compareRfq.isPending}
-                      className="text-xs px-3 py-1.5 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 inline-flex items-center gap-1"
-                    >
-                      Compare bids <ChevronRight className="w-3 h-3" />
-                    </button>
+                    <div className="flex items-center justify-end gap-2">
+                      {(r.status === 'open' || r.status === 'sent') && (
+                        <button
+                          onClick={() => navigate(`/market-sim/${r.id}`)}
+                          className="text-xs px-3 py-1.5 border border-violet-300 text-violet-700 rounded hover:bg-violet-50 inline-flex items-center gap-1"
+                          title="Open the marketplace sim for this RFQ"
+                        >
+                          <BriefcaseBusiness className="w-3 h-3" /> Open bid war <ChevronRight className="w-3 h-3" />
+                        </button>
+                      )}
+                      <button
+                        onClick={() => compareRfq.mutate(r.id)}
+                        disabled={compareRfq.isPending}
+                        className="text-xs px-3 py-1.5 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 inline-flex items-center gap-1"
+                      >
+                        Compare bids <ChevronRight className="w-3 h-3" />
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

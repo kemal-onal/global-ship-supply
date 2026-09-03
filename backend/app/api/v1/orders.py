@@ -5,6 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
+from sqlalchemy.orm import selectinload
 
 from app.deps.auth import CurrentToken, DBSession, ReadDBSession
 from app.models.audit import AuditAction, AuditLog
@@ -89,7 +90,18 @@ async def list_orders(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
-    stmt = select(Order).order_by(Order.order_date.desc())
+    stmt = (
+        select(Order)
+        .order_by(Order.order_date.desc())
+        # Eager-load the relationships _serialize() touches so the
+        # async session doesn't try to lazy-load after the route
+        # returns (MissingGreenlet).
+        .options(
+            selectinload(Order.vessel),
+            selectinload(Order.port),
+            selectinload(Order.items).selectinload(OrderItem.product),
+        )
+    )
     if vessel_id:
         stmt = stmt.where(Order.vessel_id == vessel_id)
     if port_id:
@@ -109,7 +121,16 @@ async def get_order(
     db: ReadDBSession,
     token: CurrentToken,
 ):
-    o = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    stmt = (
+        select(Order)
+        .where(Order.id == order_id)
+        .options(
+            selectinload(Order.vessel),
+            selectinload(Order.port),
+            selectinload(Order.items).selectinload(OrderItem.product),
+        )
+    )
+    o = (await db.execute(stmt)).scalar_one_or_none()
     if not o:
         raise HTTPException(status_code=404, detail="Order not found")
     return _serialize(o)
@@ -197,7 +218,18 @@ async def create_order(
     ))
 
     await db.commit()
-    await db.refresh(order)
+    # Eager-load relationships needed for _serialize — async sessions
+    # can't lazy-load, so we re-query with selectinload.
+    stmt = (
+        select(Order)
+        .options(
+            selectinload(Order.vessel),
+            selectinload(Order.port),
+            selectinload(Order.items).selectinload(OrderItem.product),
+        )
+        .where(Order.id == order.id)
+    )
+    order = (await db.execute(stmt)).scalar_one()
     return _serialize(order)
 
 

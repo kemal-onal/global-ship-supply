@@ -9,6 +9,7 @@ import {
   MapPin,
   UtensilsCrossed,
   Gavel,
+  BriefcaseBusiness,
   ShieldCheck,
   RefreshCw,
   Settings,
@@ -39,6 +40,7 @@ const nav = [
   { to: '/ports', label: 'Ports', icon: MapPin },
   { to: '/catering', label: 'Catering & Provisioning', icon: UtensilsCrossed },
   { to: '/rfq', label: 'RFQ & Bidding', icon: Gavel },
+  { to: '/market-sim', label: 'Marketplace Sim', icon: BriefcaseBusiness },
   { to: '/customs', label: 'Customs & Regulations', icon: ShieldCheck },
   { to: '/sync', label: 'Offline Sync', icon: RefreshCw },
 ]
