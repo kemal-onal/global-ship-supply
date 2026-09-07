@@ -5,12 +5,16 @@ from app.api.v1 import (
     auth,
     catalog,
     catering,
+    clarification,
     customs,
     dashboard,
+    marketplace,
     notifications,
     orders,
+    permissions,
     ports,
     rfq,
+    supplier_portal,
     sync,
     users,
     vessels,
@@ -30,4 +34,14 @@ api_router.include_router(customs.router, prefix="/customs", tags=["customs"])
 api_router.include_router(sync.router, prefix="/sync", tags=["sync"])
 api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboard"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
+api_router.include_router(permissions.router, prefix="/permissions", tags=["permissions"])
+# Marketplace redesign (migration 0005). Routes live at the top
+# level of /api/v1/orders/... so the OpenAPI tags match the
+# purchaser's mental model of "things I do with an order".
+api_router.include_router(clarification.router, tags=["marketplace"])
+api_router.include_router(marketplace.router, tags=["marketplace"])
+# Supplier portal: the supplier-facing app, separate prefix
+# because it has its own auth model (supplier users, not
+# vessel-scoped). Kept as a sibling of the marketplace routers.
+api_router.include_router(supplier_portal.router, tags=["supplier-portal"])
 api_router.include_router(internal_router, prefix="/internal", tags=["internal"])

@@ -53,6 +53,47 @@ class RFQStatus(str, enum.Enum):
     EXPIRED = "expired"
 
 
+class LineDecision(str, enum.Enum):
+    """What fraction of a supplier's offered list the company is
+    actually using for a given line.
+
+    * ``use_full`` — take the full quantity the supplier offered
+      (the supplier's offer may itself be a partial offer, in which
+      case we take the partial amount).
+    * ``use_half`` — take half of the quantity the supplier offered.
+    * ``drop``    — don't use this supplier for this line (we picked
+      somebody else, or the line is being dropped entirely).
+    """
+    USE_FULL = "use_full"
+    USE_HALF = "use_half"
+    DROP = "drop"
+
+
+class QuoteLineStatus(str, enum.Enum):
+    """A supplier's per-line answer to the RFQ.
+
+    * ``full``    — we can supply the full requested quantity
+    * ``partial`` — we can supply ceil(requested / 2)
+    * ``none``    — we don't carry this product
+    """
+    FULL = "full"
+    PARTIAL = "partial"
+    NONE = "none"
+
+
+class AssignmentStatus(str, enum.Enum):
+    """Status of a winning supplier's slice after the purchaser
+    approves the proposal.
+
+    * ``pending``   — assigned but not yet confirmed
+    * ``confirmed`` — supplier clicked "accept" within 24h
+    * ``dropped``   — supplier was too slow (or admin dropped them)
+    """
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    DROPPED = "dropped"
+
+
 class Supplier(Base, TimestampMixin, SoftDeleteMixin, AuditMixin):
     """Local/regional supplier of provisions, deck/engine stores, etc."""
 
@@ -247,13 +288,23 @@ class RFQItem(Base, TimestampMixin):
     rfq_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("rfqs.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    product_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
+    # Nullable (migration 0007_impa_first): mirrors the change on
+    # order_items. The IMPA code is the typed string the purchaser
+    # supplied, and the supplier is the source of truth for the
+    # product. Legacy rows with a product_id keep theirs.
+    product_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=True, index=True
     )
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit: Mapped[str] = mapped_column(String(20), default="pcs", nullable=False)
     target_unit_price: Mapped[float | None] = mapped_column(Numeric(12, 4), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Marketplace redesign (migration 0005). Denormalized from
+    # Product.impa_code at RFQ build time so the supplier portal
+    # renders the IMPA reference without a join. Nullable: legacy
+    # RFQs (built before this column existed) won't have a value
+    # until they're rebuilt.
+    impa_code: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
 
     rfq: Mapped["RFQ"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship()
@@ -299,6 +350,36 @@ class SupplierQuote(Base, TimestampMixin, AuditMixin):
     # Source
     source: Mapped[str] = mapped_column(String(20), default="email", nullable=False)  # email, portal, api
 
+    # Marketplace redesign (migration 0005)
+    # Informational: the per-line "shape" of the supplier's offer.
+    # "full" means every line was offered at full quantity; "partial"
+    # means at least one line was offered as partial. Quotes with
+    # no offer lines (all "none") still get a row with decision_method
+    # = "full" as the default — a quote exists if the supplier
+    # replied at all, even with no-bids.
+    decision_method: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Set when the supplier clicks "accept" on their slice after the
+    # purchaser approves the proposal. The 24h preparation window is
+    # preparation_deadline - approved_at.
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set when the proposal is approved. preparation_deadline = now + 24h.
+    # The background sweeper drops slices whose preparation_deadline
+    # is in the past and confirmed_at is still null.
+    preparation_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # IMPA-first redesign (migration 0007). The ETA/ETD gate that
+    # sits at the top of the supplier's quote form. Null = the
+    # supplier hasn't decided yet (the quote is "in progress" and
+    # the lattice hides it). True = the supplier can deliver the
+    # package between the order's ETA and ETD; the line picker
+    # opens. False = the supplier declined; a decline_reason is
+    # optionally recorded, and the quote is still counted toward
+    # the RFQ's responded_count so the RFQ can progress to compose.
+    can_deliver_in_window: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    # Set when can_deliver_in_window flips to false. The order's
+    # "why" surfaced in the marketplace lattice.
+    declined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    decline_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
     rfq: Mapped["RFQ"] = relationship(back_populates="quotes")
     supplier: Mapped["Supplier"] = relationship(back_populates="quotes")
     items: Mapped[list["QuoteItem"]] = relationship(back_populates="quote", cascade="all, delete-orphan")
@@ -323,6 +404,15 @@ class QuoteItem(Base, TimestampMixin):
     unit_price: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Marketplace redesign (migration 0005). The supplier's per-line
+    # answer. "full" / "partial" / "none". Default "full" so legacy
+    # quote rows (written before this column existed) still validate.
+    # When "partial", ``quoted_quantity`` is set to ceil(quantity/2)
+    # and the ``unit_price`` is the price for that partial quantity.
+    # When "none", the row still exists (the supplier replied with
+    # "no bid" for this product) but unit_price/quantity may be 0.
+    line_status: Mapped[str] = mapped_column(String(10), nullable=False, default="full")
+    quoted_quantity: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     quote: Mapped["SupplierQuote"] = relationship(back_populates="items")
     product: Mapped["Product"] = relationship()
@@ -340,3 +430,133 @@ class BidComparison(Base, TimestampMixin, AuditMixin):
     results: Mapped[list[dict]] = mapped_column(JSONB, nullable=False)  # [{supplier_id, scores, weighted}]
     winner_quote_id: Mapped[UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+# ──────────────────────────────────────────────────────────────────
+# Marketplace redesign (migration 0005_marketplace_redesign)
+# ──────────────────────────────────────────────────────────────────
+
+
+class OrderDecision(Base, TimestampMixin):
+    """The company's per-line decision: which supplier's offer are we
+    using for this line, and how much of it?
+
+    One row per (rfq_item_id, supplier_id) that the company chose to
+    include in the proposal. When a line is being dropped (no
+    supplier can fulfil it), no row is written for that line — the
+    dropped line is implicit from the absence of any decision for
+    the rfq_item_id.
+
+    The ``customer_facing_total`` is what the purchaser sees on the
+    proposal (unit_price × used_quantity × (1 + margin_pct/100)).
+    It is computed at compose time and frozen on the row, so changing
+    the order's margin_pct later does not rewrite history.
+    """
+
+    __tablename__ = "order_decisions"
+
+    order_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rfq_item_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("rfq_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    supplier_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    quote_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_quotes.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    # "use_full" | "use_half" | "drop". The marketplace route only
+    # writes use_full / use_half; "drop" exists so a re-compose can
+    # mark a previously-selected line as dropped.
+    decision: Mapped[str] = mapped_column(String(10), nullable=False)
+    # The supplier's unit_price for this line (what the company sees
+    # in the marketplace lattice). Used to compute
+    # customer_facing_total = unit_price * used_quantity * (1 + margin/100).
+    unit_price: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
+    used_quantity: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The wholesale line total: unit_price * used_quantity.
+    line_total: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
+    # The margin % that was applied for the purchaser's view.
+    # Stored on the row so changing the order's margin later
+    # doesn't rewrite history.
+    margin_pct: Mapped[float] = mapped_column(Numeric(5, 2), nullable=False)
+    customer_facing_total: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
+    # The admin who composed the proposal. Used by the audit log
+    # when a decision is added / changed.
+    created_by: Mapped[UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+
+    # Relationships
+    order: Mapped["Order"] = relationship()
+    rfq_item: Mapped["RFQItem"] = relationship()
+    supplier: Mapped["Supplier"] = relationship()
+    quote: Mapped["SupplierQuote"] = relationship()
+    assignments: Mapped[list["SupplierLineAssignment"]] = relationship(back_populates="decision")
+
+    __table_args__ = (
+        CheckConstraint(
+            "decision IN ('use_full', 'use_half', 'drop')",
+            name="ck_order_decisions_decision",
+        ),
+        CheckConstraint("used_quantity > 0", name="ck_order_decisions_used_qty_positive"),
+    )
+
+    def __repr__(self) -> str:
+        return f"<OrderDecision order={self.order_id} line={self.rfq_item_id} {self.decision}>"
+
+
+class SupplierLineAssignment(Base, TimestampMixin):
+    """The winning slice given to a supplier after the purchaser
+    approves the proposal. One row per (rfq_item_id, supplier_id)
+    that survives approval.
+
+    Carries the 24h preparation deadline. The background sweeper
+    flips rows whose deadline has passed and confirmed_at is still
+    null to ``dropped``. Dropped lines do not auto-rebid — the
+    company has to invite another supplier manually.
+    """
+
+    __tablename__ = "supplier_line_assignments"
+
+    order_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    rfq_item_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("rfq_items.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    supplier_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("suppliers.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    quote_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("supplier_quotes.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    decision_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("order_decisions.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    # "pending" | "confirmed" | "dropped"
+    line_status: Mapped[str] = mapped_column(
+        String(10), nullable=False, default="pending"
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    dropped_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    drop_reason: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    # Set when the proposal is approved to now + 24h.
+    preparation_deadline: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # Relationships
+    order: Mapped["Order"] = relationship()
+    rfq_item: Mapped["RFQItem"] = relationship()
+    supplier: Mapped["Supplier"] = relationship()
+    quote: Mapped["SupplierQuote"] = relationship()
+    decision: Mapped["OrderDecision"] = relationship(back_populates="assignments")
+
+    __table_args__ = (
+        CheckConstraint(
+            "line_status IN ('pending', 'confirmed', 'dropped')",
+            name="ck_supplier_line_assignments_status",
+        ),
+    )
+
+    def __repr__(self) -> str:
+        return f"<SupplierLineAssignment order={self.order_id} supplier={self.supplier_id} {self.line_status}>"

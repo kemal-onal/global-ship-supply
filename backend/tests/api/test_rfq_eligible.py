@@ -30,9 +30,14 @@ from app.models.product import UnitOfMeasure
 
 
 def _make_token() -> TokenData:
+    # Company-side role so prices are visible — the redaction layer
+    # strips unit_price + currency for purchasing_officer. The
+    # redaction behavior is covered in test_redaction.py; this file
+    # is about the supplier_count feature, so use a role that
+    # exercises the happy path with full prices.
     return TokenData(
         sub="test-user",
-        roles=["purchasing_officer"],
+        roles=["super_admin"],
         permissions=["catalog:read"],
     )
 

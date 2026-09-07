@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
-import { Gavel, Loader2, TrendingUp, ChevronRight, BriefcaseBusiness } from 'lucide-react'
+import { Gavel, Loader2, TrendingUp, ChevronRight, BriefcaseBusiness, Eye } from 'lucide-react'
 import toast from 'react-hot-toast'
 
 import { apiGet, apiPost } from '../api/client'
+import { useAuthStore } from '../store/auth'
 
 const STATUS_COLORS = {
   draft: 'bg-slate-100 text-slate-700',
@@ -17,6 +18,14 @@ const STATUS_COLORS = {
 export default function RFQPage() {
   const navigate = useNavigate()
   const qc = useQueryClient()
+  const hasRole = useAuthStore(s => s.hasRole)
+  // The "Compare bids" button is the same endpoint for everyone, but
+  // the response shape differs: admins get full leaderboard data
+  // (supplier names, prices, ratings, subscores); everyone else gets
+  // a sealed shape (ranked Bidder N + winner's total/lead time). The
+  // label + tooltip on the button surfaces this so the demo
+  // audience isn't surprised when they hit it as a purchaser.
+  const isAdmin = hasRole('super_admin', 'fleet_admin')
   const { data: rfqs, isLoading } = useQuery({
     queryKey: ['rfqs'],
     queryFn: () => apiGet('/rfq', { query: { limit: 50 } }),
@@ -165,8 +174,17 @@ export default function RFQPage() {
                         onClick={() => compareRfq.mutate(r.id)}
                         disabled={compareRfq.isPending}
                         className="text-xs px-3 py-1.5 border border-blue-300 text-blue-700 rounded hover:bg-blue-50 inline-flex items-center gap-1"
+                        title={
+                          isAdmin
+                            ? 'Compare all bids and pick a winner (full leaderboard).'
+                            : 'You will see the winner and the ranking. Supplier identities are hidden until the award is committed by an admin.'
+                        }
                       >
-                        Compare bids <ChevronRight className="w-3 h-3" />
+                        {isAdmin ? (
+                          <>Compare bids <ChevronRight className="w-3 h-3" /></>
+                        ) : (
+                          <><Eye className="w-3 h-3" /> Re-rank bids (sealed) <ChevronRight className="w-3 h-3" /></>
+                        )}
                       </button>
                     </div>
                   </td>

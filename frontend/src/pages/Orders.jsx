@@ -4,14 +4,19 @@ import { useState } from 'react'
 import { ClipboardList, Plus, Search, Loader2 } from 'lucide-react'
 
 import { apiGet } from '../api/client'
+import { useAuthStore } from '../store/auth'
 
 const STATUSES = [
   { value: '', label: 'All statuses' },
   { value: 'draft', label: 'Draft' },
-  { value: 'pending_approval', label: 'Pending approval' },
-  { value: 'rfq_in_progress', label: 'RFQ in progress' },
-  { value: 'bidding', label: 'Bidding' },
-  { value: 'awaiting_confirmation', label: 'Awaiting confirmation' },
+  { value: 'awaiting_clarification', label: 'Awaiting clarification' },
+  { value: 'quoting', label: 'Quoting' },
+  { value: 'ready_for_compose', label: 'Ready to compose' },
+  { value: 'awaiting_purchaser_approval', label: 'Awaiting your approval' },
+  { value: 'pending_approval', label: 'Pending approval (legacy)' },
+  { value: 'rfq_in_progress', label: 'RFQ in progress (legacy)' },
+  { value: 'bidding', label: 'Bidding (legacy)' },
+  { value: 'awaiting_confirmation', label: 'Awaiting confirmation (legacy)' },
   { value: 'confirmed', label: 'Confirmed' },
   { value: 'in_transit', label: 'In transit' },
   { value: 'delivered', label: 'Delivered' },
@@ -22,6 +27,10 @@ const STATUSES = [
 
 const palette = {
   draft: 'bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-300',
+  awaiting_clarification: 'bg-amber-100 text-amber-700',
+  quoting: 'bg-blue-100 text-blue-700',
+  ready_for_compose: 'bg-violet-100 text-violet-700',
+  awaiting_purchaser_approval: 'bg-amber-100 text-amber-700',
   pending_approval: 'bg-amber-100 text-amber-700',
   rfq_in_progress: 'bg-blue-100 text-blue-700',
   bidding: 'bg-violet-100 text-violet-700',
@@ -35,6 +44,14 @@ const palette = {
 }
 
 export default function OrdersPage() {
+  const { hasRole } = useAuthStore()
+  // IMPA-first: the order doesn't carry a total at all (the
+  // supplier quotes after fan-out), so there's no column to
+  // redact here. We still need the supplier's vessel_label
+  // redaction, which the backend applies before this page
+  // ever sees the row.
+  const isSupplier = hasRole('supplier')
+
   const [q, setQ] = useState('')
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
@@ -114,7 +131,6 @@ export default function OrdersPage() {
                   <th className="px-4 py-3 text-left font-semibold">Status</th>
                   <th className="px-4 py-3 text-left font-semibold">Priority</th>
                   <th className="px-4 py-3 text-left font-semibold">Date</th>
-                  <th className="px-4 py-3 text-right font-semibold">Total</th>
                   <th className="px-4 py-3 text-center font-semibold">Items</th>
                 </tr>
               </thead>
@@ -126,7 +142,9 @@ export default function OrdersPage() {
                         {o.reference}
                       </Link>
                     </td>
-                    <td className="px-4 py-3">{o.vessel_name || '—'}</td>
+                    <td className="px-4 py-3">
+                      {isSupplier ? (o.vessel_label || '—') : (o.vessel_name || '—')}
+                    </td>
                     <td className="px-4 py-3 text-slate-500">{o.port_name || '—'}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${palette[o.status]}`}>
@@ -138,9 +156,6 @@ export default function OrdersPage() {
                     </td>
                     <td className="px-4 py-3 text-slate-500 text-xs">
                       {new Date(o.order_date).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right font-medium">
-                      {o.currency} {o.grand_total?.toLocaleString(undefined, { maximumFractionDigits: 0 })}
                     </td>
                     <td className="px-4 py-3 text-center text-xs text-slate-500">
                       {o.items?.length || 0}

@@ -30,13 +30,29 @@ from app.models.supplier import RFQStatus
 
 # --- helpers ----------------------------------------------------------
 
+# A shared vessel id used by the default fake token and fake RFQ.
+# The simulate route enforces vessel-scope via assert_vessel_access,
+# so the fake token's vessel must match the fake RFQ's order.vessel
+# for the route to reach the status check.
+_TEST_VESSEL = uuid4()
 
-def _make_token(*, permissions: list[str] | None = None) -> TokenData:
-    """Build a TokenData that has the given permission strings."""
+
+def _make_token(
+    *,
+    permissions: list[str] | None = None,
+    vessel_id: UUID | None = None,
+) -> TokenData:
+    """Build a TokenData that has the given permission strings.
+
+    ``vessel_id`` defaults to the shared test vessel so the
+    ``assert_vessel_access`` check passes when the fake RFQ's
+    order carries the same vessel.
+    """
     return TokenData(
         sub="test-user",
         roles=["purchasing_officer"] if permissions else ["viewer"],
         permissions=permissions or [],
+        vessel_id=vessel_id or _TEST_VESSEL,
     )
 
 
@@ -49,6 +65,11 @@ def _make_rfq(*, status: RFQStatus = RFQStatus.OPEN) -> SimpleNamespace:
         responded_count=0,
         awarded_quote_id=None,
         awarded_at=None,
+        # The simulate route now calls ``assert_vessel_access`` which
+        # walks ``rfq.order.vessel_id``. The fake needs an order
+        # attribute; use the shared test vessel so the assertion
+        # passes for the default test token.
+        order=SimpleNamespace(vessel_id=_TEST_VESSEL, id=uuid4()),
         extra={},
         items=[],
         quotes=[],

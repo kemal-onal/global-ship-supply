@@ -8,6 +8,7 @@ The search endpoint is the heart of the platform. It uses:
 from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,6 +21,11 @@ from app.models.product import (
     ProductStatus,
 )
 from app.models.supplier import ProductSupplier
+from app.services.redaction import (
+    hides_prices,
+    seal_catalog_for_purchaser,
+    seal_product_for_purchaser,
+)
 from app.services.search import SearchFilters, search_products
 
 router = APIRouter()
@@ -57,7 +63,13 @@ async def list_products(
         offset=offset,
         sort=sort,
     )
-    return await search_products(db, filters)
+    result = await search_products(db, filters)
+    # The purchaser's view strips every price — the OrderCreate cart
+    # can't pre-fill a unit_price from the catalog if the API leaks
+    # one, and the catalog page must show "—" for the price column.
+    if hides_prices(token.roles):
+        return seal_catalog_for_purchaser(result)
+    return result
 
 
 @router.get("/rfq-eligible")
@@ -144,7 +156,10 @@ async def list_rfq_eligible(
             "manufacturer": r["manufacturer"],
             "supplier_count": int(r["supplier_count"]),
         })
-    return {"items": items, "total": total, "min_suppliers": min_suppliers}
+    result = {"items": items, "total": total, "min_suppliers": min_suppliers}
+    if hides_prices(token.roles):
+        return seal_catalog_for_purchaser(result)
+    return result
 
 
 @router.get("/products/{product_id}")
@@ -156,7 +171,7 @@ async def get_product(
     p = (await db.execute(select(Product).where(Product.id == product_id))).scalar_one_or_none()
     if not p:
         raise HTTPException(status_code=404, detail="Product not found")
-    return {
+    payload = {
         "id": str(p.id),
         "sku": p.sku,
         "name": p.name,
@@ -192,6 +207,9 @@ async def get_product(
             for s in p.specifications
         ],
     }
+    if hides_prices(token.roles):
+        return seal_product_for_purchaser(payload)
+    return payload
 
 
 @router.get("/categories")
@@ -234,6 +252,68 @@ async def list_impa(
     stmt = stmt.limit(limit).offset(offset)
     rows = (await db.execute(stmt)).scalars().all()
     return [{"code": r.code, "name": r.name, "description": r.description, "group": r.group_code} for r in rows]
+
+
+class ImpaLookupIn(BaseModel):
+    """Body for the bulk IMPA lookup.
+
+    Why bulk: a single order can have 5-20 lines, and a supplier's
+    quote form might render 30+ lines. Per-code round trips
+    (N+1) would be wasteful. The frontend batches the codes on
+    the page into one POST.
+    """
+    codes: list[str] = Field(min_length=1, max_length=500)
+
+
+@router.post("/impa/lookup")
+async def lookup_impa(
+    payload: ImpaLookupIn,
+    db: ReadDBSession,
+    token: CurrentToken,
+):
+    """Bulk-resolve IMPA codes to their human names.
+
+    The IMPA-first redesign: the **vessel** side types a 6-digit
+    IMPA code, but the **supplier** side doesn't know what those
+    codes mean. The company (admin) is the bridge — and the
+    platform's job is to translate the code into a name wherever
+    it's rendered. This endpoint powers that translation.
+
+    Behaviour:
+      * Returns one entry per requested code, in the same order.
+      * Unknown codes get `name: null` (not 404) so the UI can
+        gracefully render "code: 999999 (not in catalog)" without
+        a per-line error state.
+      * Whitespace is stripped; empty strings are filtered out
+        before the DB query but preserved in the response with
+        `name: null` so the caller can index by position.
+    """
+    # Dedupe + strip + filter empties for the DB query, but keep
+    # the original list (with empties) so the response order
+    # matches the request.
+    requested = [c.strip() if c else "" for c in payload.codes]
+    seen: set[str] = set()
+    query_codes: list[str] = []
+    for c in requested:
+        if c and c not in seen:
+            seen.add(c)
+            query_codes.append(c)
+    if not query_codes:
+        return [{"code": c, "name": None, "group": None} for c in requested]
+
+    rows = (await db.execute(
+        select(ImpaCode).where(ImpaCode.code.in_(query_codes))
+    )).scalars().all()
+    by_code = {r.code: r for r in rows}
+
+    return [
+        {
+            "code": c,
+            "name": by_code[c].name if c in by_code else None,
+            "group": by_code[c].group_code if c in by_code else None,
+        }
+        for c in requested
+    ]
 
 
 @router.get("/issa")

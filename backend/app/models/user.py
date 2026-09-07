@@ -329,6 +329,7 @@ SYSTEM_PERMISSIONS = [
     ("rfq", "read", "own"),
     ("rfq", "manage", "vessel"),
     ("rfq", "manage", "fleet"),
+    ("rfq", "simulate", "own"),
     ("quotes", "submit", "own"),
     ("quotes", "read", "own"),
     ("quotes", "compare", "own"),
@@ -351,4 +352,16 @@ SYSTEM_PERMISSIONS = [
     ("settings", "read", "own"),
     ("settings", "update", "own"),
     ("settings", "manage", "global"),
+    # Marketplace redesign (migration 0005) — admin composes,
+    # purchaser approves, company asks for clarification, admin
+    # drops slow suppliers. The bid war's `rfq:*` / `quotes:*`
+    # permissions stay; they're the engine's read side and don't
+    # conflict with the new flow.
+    ("marketplace", "compose", "global"),
+    ("marketplace", "approve", "own"),
+    ("marketplace", "clarify", "global"),
+    ("marketplace", "drop", "global"),
+    ("supplier_portal", "view", "global"),
+    ("supplier_portal", "quote", "global"),
+    ("supplier_portal", "accept", "global"),
 ]

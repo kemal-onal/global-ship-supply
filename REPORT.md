@@ -74,13 +74,38 @@ A full stack, three layers deep, with a real-time data path on top:
 - **Synthetic AIS ingest endpoint** (`/internal/ais/ingest`,
   unauthenticated) for the simulator
 - **199 tests** in pytest with `asyncio_mode = "auto"` — the suite
-  runs in ~5 seconds
+  runs in ~5 seconds. Updated to **285 tests** in ~7 s with the
+  RBAC + sealed-bid + counter-offer visibility work, then to
+  **402 tests** in ~12 s with the marketplace redesign + IMPA-first
+  ordering + clarification thread + the September 2026 bugfix
+  regressions.
+- **Marketplace redesign** — the sealed-bid auction was replaced with
+  a fan-out RFQ, per-line supplier decision, admin-composed
+  proposal, and a 24h supplier acceptance window. New routes in
+  `app/api/v1/marketplace.py`, new services in
+  `app/services/{marketplace,redaction}.py`, and a background
+  sweeper that drops suppliers who don't confirm in 24h. The
+  proposal composer is the most complex new code in the backend.
+- **IMPA-first ordering** — order lines no longer carry a price. The
+  purchaser types a 6-digit IMPA code in `OrderCreate`, the
+  typeahead resolves to a catalog row, and the supplier's first
+  commit is "can I deliver this in the vessel's ETA→ETD window"
+  *before* any per-line pricing. The admin↔purchaser clarification
+  thread (`app/api/v1/clarification.py`) is the surface for
+  handling ambiguity.
+- **Supplier portal** — a dedicated supplier-facing page at
+  `/supplier` that lists invited RFQs, lets the supplier accept or
+  decline, and redacts vessel identity to `"Vessel #N"` (CRC32 of
+  the vessel id, stable across requests). New routes in
+  `app/api/v1/supplier_portal.py`, new service in
+  `app/services/redaction.py`, new page at
+  `frontend/src/pages/SupplierPortal.jsx`.
 
 ### Frontend (React 19 + Vite PWA)
 
-- **React Router** with 15 pages: Dashboard, Catalog, ProductDetail,
+- **React Router** with 16 pages: Dashboard, Catalog, ProductDetail,
   Orders, OrderCreate, OrderDetail, Vessels, FleetMap, Ports, Catering,
-  RFQ, Customs, Sync, Settings, Login
+  RFQ, MarketSim, Customs, Sync, Settings, **Permissions**, Login
 - **Zustand** stores for auth, theme, network status, and notifications
 - **TanStack Query** for all server state with auto-refresh on 401
 - **TanStack Virtual** for the catalog data grid (handles thousands
@@ -161,15 +186,27 @@ A real list of known gaps, in priority order:
 6. **Frontend test suite.** No vitest, no Playwright. The frontend
    has linting but no automated tests. This was a deliberate
    trade-off given the project's "demo" framing, not a feature.
-7. **CI.** No GitHub Actions workflow runs the test suite on push.
+7. **Supplier-portal push channel.** When a purchaser approves a
+   proposal, the 24h acceptance window starts. The supplier is
+   notified via the existing per-user `notifications` table +
+   30s polling — no WebSocket / SSE on the supplier side. The
+   infrastructure for it is in place (the same `notifications`
+   table + the bell panel), but a supplier-specific push
+   channel is a future change.
+8. **Marketplace proposal amendments.** Once a proposal is
+   composed, the admin can't change per-line winners without
+   re-composing from scratch. The data model would support
+   it (the `SupplierLineAssignment` rows are addressable by
+   id), but the UI doesn't expose the affordance.
+9. **CI.** No GitHub Actions workflow runs the test suite on push.
    Adding one is ~20 lines of YAML.
-8. **Load testing.** No `locust` / `k6` scripts. The catalog
-   endpoint is index-tuned for the 5,000-row target but not
-   benchmarked under realistic concurrent load.
-9. **Internationalisation.** All UI strings are hard-coded English.
-   The catering algorithm and the customs engine both deal with
-   per-nationality data, but the chrome itself is not translated.
-10. **Accessibility audit.** Tailwind + semantic HTML gets you most
+10. **Load testing.** No `locust` / `k6` scripts. The catalog
+    endpoint is index-tuned for the 5,000-row target but not
+    benchmarked under realistic concurrent load.
+11. **Internationalisation.** All UI strings are hard-coded English.
+    The catering algorithm and the customs engine both deal with
+    per-nationality data, but the chrome itself is not translated.
+12. **Accessibility audit.** Tailwind + semantic HTML gets you most
     of the way there, but the project has not been audited against
     WCAG.
 
@@ -278,33 +315,173 @@ We left the bug in place because the surrounding code is correct
 and the fix is obvious from the comment. The README tells readers
 to use `default_med` for visible motion.
 
+### 7. Sealed-bid RFQ is a response-side filter, not a data-model flag
+
+A `purchasing_officer` running the bid war before the award is
+committed shouldn't see supplier identities or per-bidder prices —
+that would let them game the round-2 re-bid to undercut the
+target exactly. The naive fix is a `sealed_bid_mode: bool` column
+on the `RFQ` row, and every consumer checks it.
+
+We did the opposite: the `RFQ` table is unchanged. The DB always
+holds the truth. The redaction lives in
+`backend/app/services/rfq_serializers.py`, a single module that
+strips supplier names, per-bidder prices, and the reliability
+/quality ratings from the response before it leaves the API
+boundary. `super_admin` and `fleet_admin` see the full
+leaderboard; everyone else sees "Bidder 1, Bidder 2, …" with
+only the winner's total and lead time.
+
+The trade-off: a single RFQ can be viewed sealed by a
+purchaser and unsealed by an admin in the same session, which
+is exactly what the demo wants ("the audit log keeps the
+truth; the buyer is constrained in *what they can see*, not
+*what's in the database*").
+
+The same module classifies counter-offer terms as
+`visibility=winner_only` on the `market_sim_events` audit log,
+so the buyer's target prices and lead-time squeeze are visible
+only to the winning supplier (and admins). The rule is ready
+for the supplier portal even though the portal itself doesn't
+ship in this iteration.
+
+The deep dive is in
+[`docs/architecture/08-rbac-and-sealed-bidding.md`](./docs/architecture/08-rbac-and-sealed-bidding.md).
+
+### 8. The marketplace redesign chose per-line decisions, not a sealed-bid auction
+
+The original `MarketSimPage` was a sealed-bid auction: every
+supplier bids on the whole order, the engine picks a winner by
+weighted score, losing bids are sealed from the purchaser. The
+purchaser sees a "Bidder 1, Bidder 2, …" leaderboard and the
+winner.
+
+The redesign scrapped that. The new flow is **fan-out → per-line
+decision → 24h acceptance window**: the admin invites a slate of
+suppliers, each one decides "can I deliver in the vessel's
+ETA→ETD window" (the IMPA-first gate), then prices per line.
+The admin opens the marketplace page, sees one ranked list per
+line, and picks a winner. The purchaser approves the proposal
+and the assigned suppliers get 24h to accept.
+
+Why? Two reasons:
+
+1. **Real lead times, not simulated ones.** The auction engine's
+   "lead time" was a counter-offer simulation, not what the
+   supplier could actually fulfil. Letting each supplier commit
+   to a real ETA/ETD window up front is closer to how a real
+   supply chain works.
+2. **The supplier-portal piece needed per-line granularity
+   anyway.** A supplier might be great at provisioning rice and
+   canned fish but have no spare parts; asking them to bid on
+   the whole order is artificial. The marketplace redesign gives
+   the admin the per-line winner pick that the data was always
+   going to need.
+
+The trade-off: the admin is now the bottleneck on the per-line
+decision. A 5-line order with 3 candidate suppliers means 15
+cells to pick; the marketplace page renders this as a table
+with one click per cell. A real procurement system would
+auto-suggest winners and let the admin override; this demo
+expects the admin to click.
+
+The deep dive is in
+[`docs/architecture/09-marketplace-redesign.md`](./docs/architecture/09-marketplace-redesign.md).
+
+### 9. The IMPA-first gate happens *before* pricing, not after
+
+The original "send RFQ to suppliers" flow asked suppliers to
+quote per line up front. The redesign splits that into two
+decisions: first, "can I deliver in the vessel's ETA→ETD window?"
+(the gate, no pricing involved); second, "if yes, what's the
+price per line?" (the actual quote).
+
+Why? Because a supplier that can't deliver at all is wasting
+everyone's time if they have to fill in per-line prices just
+to decline. Worse, the admin sees a quote that looks real but
+is a placeholder for "I would have declined if you'd asked."
+
+The gate is enforced at the API level: a supplier quote with
+`can_deliver_in_window=None` is rejected at
+`POST /supplier-portal/rfqs/{id}/quote` and the UI closes the
+line picker. The supplier has to commit "yes" or "no, here's
+why" before they see a single line price field.
+
+The trade-off: suppliers have to make a binary commitment
+without seeing the full line list. In a real procurement system
+this is a phone call first, then a quote — we're just making
+the binary commitment explicit instead of implicit. The UI
+shows the vessel's ETA/ETD window in the gate card so the
+supplier can decide without a phone call.
+
+### 10. The three September 2026 bugfixes are pinned, not fixed-and-forgotten
+
+The first three real bugs in the marketplace flow were all
+defensive-correctness issues, not feature gaps. They were:
+
+1. `Enum(AuditAction)` bound the *name* (uppercase) instead of
+   the *value* (lowercase), so the new marketplace audit
+   actions (`clarification_requested`, etc.) blew up at
+   `InvalidTextRepresentationError`. The fix is two-part: the
+   model column now passes `values_callable` so every bind uses
+   the value, and migration `0008_auditaction_values` adds the
+   lowercase counterparts of the original 16 values to the PG
+   enum. The route is also fixed to bind `AuditAction.X.value`
+   explicitly (defense in depth — even if a future refactor drops
+   `values_callable` on the model, the single write still works).
+2. `GET /supplier-portal/rfqs` lazy-loaded `RFQ.quotes` in an
+   async session and exploded with `MissingGreenlet`. The fix
+   is `selectinload(RFQ.quotes)` in the `.options(...)` chain
+   at `backend/app/api/v1/supplier_portal.py:144`.
+3. The seeded APC Marine User had
+   `email="supplier@apcmarine.sg"` but the matching Supplier
+   row had `contact_email="info@apcmarine.sg"`, so the
+   `_load_supplier_for_token` helper returned 403
+   "No supplier profile bound to this user account". The fix
+   is in the seed (`scripts/seed.py`) and as a one-shot SQL
+   `UPDATE` against the live DB so the existing data works.
+
+Each fix is pinned by a regression test in
+`tests/api/test_marketplace_bugfixes.py`. The test file's
+module docstring is the contract — if you change the response
+shape of any of the three endpoints, you must update the
+corresponding assertions in lockstep with the frontend. The
+convention follows `tests/api/test_impa_catalog.py`.
+
 ---
 
 ## What we'd do next
 
 In rough priority order:
 
-1. **Fix the per-vessel dwell override in `sim.scenarios`** so
+1. **Marketplace proposal amendments** — let the admin change
+   per-line winners after composing, without re-composing from
+   scratch. The data model is ready; the UI affordance isn't.
+2. **Supplier-portal push channel** — WebSocket / SSE for the
+   24h acceptance window. Right now the supplier only learns
+   they've been assigned via the 30s polling notifications
+   table.
+3. **Fix the per-vessel dwell override in `sim.scenarios`** so
    `suez_blockage` produces visible motion. ~30 lines, no API
    changes.
-2. **Add a WebSocket / SSE notification channel** behind the
+4. **Add a WebSocket / SSE notification channel** behind the
    existing polling, with the polling as a fallback. The
    notification table is already the source of truth.
-3. **Add a GitHub Actions workflow** that runs `pytest`, `ruff
+5. **Add a GitHub Actions workflow** that runs `pytest`, `ruff
    check`, and the frontend's `npm run lint` on every push. ~20
    lines of YAML.
-4. **Add a frontend test suite** — Vitest for unit tests,
+6. **Add a frontend test suite** — Vitest for unit tests,
    Playwright for one happy-path end-to-end test (login → create
    order → see notification).
-5. **Wire a real AIS feed adapter** so the backend can ingest
+7. **Wire a real AIS feed adapter** so the backend can ingest
    production data with the same code path.
-6. **Tenant isolation** — a `tenant_id` column on every business
+8. **Tenant isolation** — a `tenant_id` column on every business
    table, with a request-scoped filter.
-7. **Internationalisation** — pull every UI string out of the
+9. **Internationalisation** — pull every UI string out of the
    components into a single i18n catalog.
-8. **Load test the catalog endpoint** with `locust` and tune the
-   indexes based on real query patterns.
-9. **Accessibility audit** against WCAG 2.1 AA.
+10. **Load test the catalog endpoint** with `locust` and tune the
+    indexes based on real query patterns.
+11. **Accessibility audit** against WCAG 2.1 AA.
 
 ---
 
@@ -316,18 +493,24 @@ I would read things in:
 1. **This file** — 10 minutes for the project story and the gap list
 2. **[`docs/architecture/01-system-architecture.md`](./docs/architecture/01-system-architecture.md)**
    — the system topology
-3. **[`backend/app/main.py`](./backend/app/main.py)** — the
+3. **[`docs/architecture/09-marketplace-redesign.md`](./docs/architecture/09-marketplace-redesign.md)**
+   — the marketplace redesign: fan-out, per-line decision, 24h
+   window. The most interesting new code in the project.
+4. **[`backend/app/main.py`](./backend/app/main.py)** — the
    middleware stack and lifespan handler, in one read you see how
    the request/response cycle is wired
-4. **[`backend/sim/runner.py`](./backend/sim/runner.py)** — the
+5. **[`backend/app/services/marketplace.py`](./backend/app/services/marketplace.py)**
+   — the proposal composer / slice assigner. The largest new
+   service in the marketplace redesign.
+6. **[`backend/sim/runner.py`](./backend/sim/runner.py)** — the
    simulator's main loop, the part that surprised me most when
    writing it
-5. **[`frontend/src/pages/FleetMap.jsx`](./frontend/src/pages/FleetMap.jsx)**
+7. **[`frontend/src/pages/FleetMap.jsx`](./frontend/src/pages/FleetMap.jsx)**
    — the Leaflet integration, the part of the frontend I had the
    most fun building
-6. **The tests** — `backend/tests/sim/` is the densest, most
-   opinionated part of the codebase
-7. **The `docs/architecture/` set** — the long-form deep dives
+8. **The tests** — `backend/tests/marketplace/` is the densest
+   new test directory, with 64 tests across 8 files
+9. **The `docs/architecture/` set** — the long-form deep dives
 
 If you only have 30 minutes, run the Fleet Map demo and read this
 file.

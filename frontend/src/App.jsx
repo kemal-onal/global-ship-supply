@@ -5,6 +5,11 @@ import { useAuthStore } from './store/auth'
 import LoginPage from './pages/Login'
 import Layout from './components/Layout'
 import DashboardPage from './pages/Dashboard'
+// IMPA-first redesign: the Catalog + ProductDetail pages are now
+// deprecation stubs. The imports stay so the /catalog and
+// /catalog/:id routes can still render the deprecation banner,
+// but the sidebar entry is dropped (see Layout.jsx). The original
+// implementations are preserved as *.jsx.removed for reference.
 import CatalogPage from './pages/Catalog'
 import ProductDetailPage from './pages/ProductDetail'
 import OrdersPage from './pages/Orders'
@@ -15,10 +20,12 @@ import FleetMapPage from './pages/FleetMap'
 import PortsPage from './pages/Ports'
 import CateringPage from './pages/Catering'
 import RFQPage from './pages/RFQ'
-import MarketSimPage from './pages/MarketSim'
+import MarketplacePage from './pages/Marketplace'
+import SupplierPortalPage from './pages/SupplierPortal'
 import CustomsPage from './pages/Customs'
 import SyncPage from './pages/Sync'
 import SettingsPage from './pages/Settings'
+import PermissionsPage from './pages/Permissions'
 
 export default function App() {
   const accessToken = useAuthStore(s => s.accessToken)
@@ -51,11 +58,14 @@ export default function App() {
         <Route path="/ports" element={<PortsPage />} />
         <Route path="/catering" element={<CateringPage />} />
         <Route path="/rfq" element={<RFQPage />} />
-        <Route path="/market-sim" element={<MarketSimPage />} />
-        <Route path="/market-sim/:rfqId" element={<MarketSimPage />} />
+        <Route path="/marketplace" element={<MarketplacePage />} />
+        <Route path="/marketplace/:rfqId" element={<MarketplacePage />} />
+        <Route path="/supplier" element={<SupplierPortalPage />} />
+        <Route path="/supplier/rfq/:rfqId" element={<SupplierPortalPage />} />
         <Route path="/customs" element={<CustomsPage />} />
         <Route path="/sync" element={<SyncPage />} />
         <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/permissions" element={<PermissionsPage />} />
         <Route path="*" element={<Navigate to="/dashboard" replace />} />
       </Route>
     </Routes>

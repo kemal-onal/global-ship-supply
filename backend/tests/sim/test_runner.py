@@ -228,6 +228,47 @@ class TestBuildRuntime:
         assert rt.settings.log_level == "DEBUG"
 
 
+# --- World regression ------------------------------------------------
+
+
+class TestWorldArrivals:
+    """Lock down multi-vessel port-arrival cycles.
+
+    Regression for a bug where ``World._assignments_by_mmsi`` was
+    re-initialised inside the assignments loop, so only the *last*
+    vessel's MMSI ended up in the map. Any other vessel crashing
+    through ``_arrive_at_port`` then raised ``KeyError``.
+    """
+
+    def test_default_med_world_drives_multi_vessel_arrivals(self) -> None:
+        # 5 vessels, force very short dwell so every vessel reaches
+        # a port within a handful of ticks.
+        ns = parse_args(["--scenario", "default_med"])
+        rt = build_runtime(ns)
+        world = rt.world
+        # Compress the dwell to 1 minute so arrivals fire quickly.
+        world.config.port_dwell_minutes = 1
+        # Compress scale to 60x so 1 wall-second = 1 sim-minute.
+        world.config.sim_time_scale = 60.0
+
+        # Tick until every vessel has arrived at least once, or 10k ticks.
+        arrivals_by_mmsi: dict[str, int] = {m: 0 for m in world.states}
+        for _ in range(10_000):
+            for _report, events in world.step():
+                for ev in events:
+                    if ev.event_type == "port_arrival":
+                        arrivals_by_mmsi[ev.mmsi] = arrivals_by_mmsi.get(ev.mmsi, 0) + 1
+            if all(c >= 1 for c in arrivals_by_mmsi.values()):
+                break
+
+        # Every vessel must have completed at least one arrival cycle
+        # without raising KeyError. The bug was that *all but the last*
+        # vessel failed at first arrival.
+        assert all(c >= 1 for c in arrivals_by_mmsi.values()), (
+            f"some vessels never arrived: {arrivals_by_mmsi}"
+        )
+
+
 # --- TestRunLoop -----------------------------------------------------
 
 

@@ -44,6 +44,13 @@ class OrderStatus(str, enum.Enum):
     RFQ_IN_PROGRESS = "rfq_in_progress"
     BIDDING = "bidding"
     AWAITING_CONFIRMATION = "awaiting_confirmation"
+    # Marketplace redesign (see app/services/marketplace.py and
+    # migration 0005_marketplace_redesign). New code writes only
+    # these; the older statuses are kept for legacy data and tests.
+    AWAITING_CLARIFICATION = "awaiting_clarification"
+    QUOTING = "quoting"
+    READY_FOR_COMPOSE = "ready_for_compose"
+    AWAITING_PURCHASER_APPROVAL = "awaiting_purchaser_approval"
     CONFIRMED = "confirmed"
     IN_TRANSIT = "in_transit"
     DELIVERED = "delivered"
@@ -107,6 +114,33 @@ class Order(Base, TimestampMixin, SoftDeleteMixin, AuditMixin):
     inspection_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     regulation_warnings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
+    # Marketplace redesign (migration 0005)
+    # Company's per-order margin, applied on top of every line for
+    # the purchaser's view. The supplier's unit_price is preserved
+    # in order_decisions; the customer_facing_total there is the
+    # price the purchaser actually sees. Default 8% (industry ballpark
+    # for a procurement agent). Nullable so legacy orders don't have
+    # a value until the marketplace flow touches them.
+    company_margin_pct: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True, server_default="8.00")
+    # ETA snapshot taken from the vessel's most recent AIS position
+    # for the destination port. Pure read; the snapshot is a
+    # point-in-time value at fan-out. Null means "no recent AIS
+    # for this port" — the UI surfaces this as a warning but does
+    # not block the flow.
+    eta_at_port: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # ETD mirror of eta_at_port (migration 0007_impa_first). The
+    # supplier uses the [ETA, ETD] window to decide whether they
+    # can deliver the package in time — that's the "can_deliver_in_window"
+    # gate on SupplierQuote. Null is the "no recent AIS for ETD"
+    # case; surfaced as a warning in the supplier portal, not a
+    # block.
+    etd_at_port: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Clarification thread between company and purchaser. Each entry:
+    #   {id, question, answer, asked_by, answered_by, ts, resolved_at}
+    # The company marks "resolved" once the thread is closed; the
+    # fan-out refuses to fire while there are unanswered entries.
+    clarification: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
+
     # Offline / sync metadata
     source: Mapped[str] = mapped_column(String(20), default="web", nullable=False)  # web, mobile, api, offline
     client_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)  # Offline client UUID
@@ -159,11 +193,25 @@ class OrderItem(Base, TimestampMixin):
     order_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    product_id: Mapped[UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=False, index=True
+    # Nullable (migration 0007_impa_first): the purchaser's order is
+    # now a typed IMPA code, not a catalog reference. The supplier
+    # is the source of truth for whether the IMPA maps to a real
+    # product. Legacy rows (and sealed-bid test fixtures) that
+    # already have a product_id keep theirs.
+    product_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=True, index=True
     )
+    # The IMPA code the purchaser typed or picked from the typeahead.
+    # Free-text (NOT a FK) — the ImpaCode table is just the typeahead
+    # source. Index for the supplier portal / lattice lookups.
+    impa_code: Mapped[str | None] = mapped_column(String(20), nullable=True, index=True)
     quantity: Mapped[int] = mapped_column(Integer, nullable=False)
     unit: Mapped[str] = mapped_column(String(20), default="pcs", nullable=False)
+    # The order line carries no price. unit_price is kept on the
+    # row (always 0 for new orders) for legacy compatibility with
+    # the existing subtotal/grand_total machinery and sealed-bid
+    # tests; the field is internal-only and never surfaced to any
+    # role.
     unit_price: Mapped[float] = mapped_column(Numeric(12, 4), nullable=False)
     line_total: Mapped[float] = mapped_column(Numeric(14, 4), nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)

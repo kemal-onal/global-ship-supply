@@ -11,6 +11,7 @@ Wiring:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -33,7 +34,11 @@ from app.core.ids import (
     record_request,
 )
 from app.core.logging import configure_logging, get_logger
-from app.db.session import check_db_health, close_db, init_db
+from app.db.session import async_sessionmaker, check_db_health, close_db, init_db
+from app.services.marketplace import (
+    sweep_preparation_timeouts,
+    sweep_rfq_deadlines,
+)
 
 
 # Prometheus metrics
@@ -65,10 +70,67 @@ async def lifespan(_app: FastAPI):
         log.info("startup.db_ok")
     except Exception as exc:  # noqa: BLE001
         log.warning("startup.db_failed", error=str(exc))
-    yield
-    log.info("shutdown.begin")
-    await close_db()
-    log.info("shutdown.done")
+
+    # Marketplace background sweeps. The 24h preparation timeout
+    # sweeper drops supplier assignments that didn't confirm in
+    # time; the RFQ deadline sweeper flips expired RFQs into
+    # READY_FOR_COMPOSE so the company can proceed. We run them
+    # on the same 5-minute tick to share a DB session; the
+    # sweepers are independent and idempotent.
+    sweeper_task: asyncio.Task | None = None
+    sweeper_stop = asyncio.Event()
+    if settings.ENVIRONMENT != "test":
+        sweeper_task = asyncio.create_task(
+            _marketplace_sweeper(sweeper_stop),
+            name="marketplace-sweeper",
+        )
+        log.info("startup.sweeper_started", interval_seconds=MARKETPLACE_SWEEP_INTERVAL_SECONDS)
+    try:
+        yield
+    finally:
+        if sweeper_task is not None:
+            sweeper_stop.set()
+            sweeper_task.cancel()
+            try:
+                await sweeper_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            log.info("shutdown.sweeper_stopped")
+        log.info("shutdown.begin")
+        await close_db()
+        log.info("shutdown.done")
+
+
+MARKETPLACE_SWEEP_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+async def _marketplace_sweeper(stop: asyncio.Event) -> None:
+    """Background loop: every 5 minutes, drop expired assignments
+    and progress expired RFQs. Uses a private session per tick
+    so a slow query never blocks an HTTP request.
+    """
+    while not stop.is_set():
+        try:
+            async with async_session_factory() as db:
+                try:
+                    prep = await sweep_preparation_timeouts(db)
+                    rfq = await sweep_rfq_deadlines(db)
+                    if prep.get("dropped") or rfq.get("progressed"):
+                        log.info(
+                            "sweeper.tick",
+                            prep_dropped=prep.get("dropped"),
+                            rfq_progressed=rfq.get("progressed"),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("sweeper.tick_failed", error=str(exc))
+                    await db.rollback()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("sweeper.session_failed", error=str(exc))
+        # Sleep with cancellation support.
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=MARKETPLACE_SWEEP_INTERVAL_SECONDS)
+        except asyncio.TimeoutError:
+            continue
 
 
 app = FastAPI(

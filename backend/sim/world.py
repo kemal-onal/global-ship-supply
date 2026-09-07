@@ -167,6 +167,7 @@ class World:
         # Build initial vessel states. Each vessel starts at the origin
         # of its first route.
         self.states: dict[str, VesselState] = {}
+        self._assignments_by_mmsi: dict[str, _RouteAssignment] = {}
         for a in assignments:
             route = a.current_route()
             origin = route.origin
@@ -186,7 +187,7 @@ class World:
                 minutes_in_port=float(self.rng.randint(0, self.config.port_dwell_minutes)),
             )
             self.states[a.vessel.mmsi] = vs
-            self._assignments_by_mmsi: dict[str, _RouteAssignment] = {a.vessel.mmsi: a}
+            self._assignments_by_mmsi[a.vessel.mmsi] = a
 
     # --- main tick ----------------------------------------------------
 

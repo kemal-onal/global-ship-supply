@@ -15,7 +15,7 @@
 ![Cache: Redis 7](https://img.shields.io/badge/cache-Redis%207-dc382d)
 ![PWA: Service Worker](https://img.shields.io/badge/PWA-Service%20Worker-5a0fc8)
 ![Map: Leaflet 1.9](https://img.shields.io/badge/map-Leaflet%201.9-199900)
-![Tests: 199 passing](https://img.shields.io/badge/tests-199%20passing-brightgreen)
+![Tests: 402 passing](https://img.shields.io/badge/tests-402%20passing-brightgreen)
 
 ## Highlights
 
@@ -29,7 +29,31 @@
   crew breakdown × voyage length × per-nationality calorie targets.
 - **Supplier bidding with weighted comparison** — RFQ → quotes →
   `compare_quotes` with price / lead-time / reliability / quality
-  scoring (weights tunable via env vars).
+  scoring (weights tunable via env vars). Bid wars are **sealed**
+  for non-admin callers (ranked "Bidder N" labels, winner's total
+  and lead time only) — supplier identity and per-bidder prices
+  are hidden until an admin commits the award.
+- **Six-role RBAC with vessel scoping** — `super_admin`,
+  `fleet_admin`, `vessel_captain`, `purchasing_officer`,
+  `chief_steward`, and external `supplier` roles, each with a
+  curated set of `resource:action:scope` permissions. A purchaser
+  on vessel 0 cannot see RFQs belonging to vessel 1 — the API
+  returns 404 (not 403) to avoid leaking resource existence.
+- **Marketplace redesign** — replaces the sealed-bid auction with a
+  fan-out RFQ, per-line supplier decision, admin-composed proposal,
+  and a 24-hour supplier acceptance window. Purchasers see who
+  wins which line; suppliers see only the lines they bid on; the
+  market-sim auction is gone.
+- **IMPA-first ordering** — order lines carry no price. The
+  purchaser types a 6-digit IMPA code in `OrderCreate`, the typeahead
+  resolves to a catalog row, and the supplier commit is "I can
+  deliver this in the vessel's ETA→ETD window" before any per-line
+  pricing. The clarification thread is the admin↔purchaser surface
+  for handling ambiguity.
+- **Supplier portal** — a dedicated supplier-facing page at
+  `/supplier` that lists invited RFQs, lets the supplier accept
+  or decline, and redacts vessel identity to "Vessel #N" via a
+  CRC32 hash. Suppliers never see who the actual vessel is.
 - **Customs & port regulation engine** — JSONLogic-lite evaluator over
   (order, country) → severity, blocking flag, permit requirement.
 - **Per-user notifications** — server-side inbox + 30s polling badge +
@@ -38,18 +62,23 @@
   from FastAPI/SQLAlchemy, with 4 built-in scenarios (Mediterranean
   shuttle, Suez blockage, North-Atlantic storm rerouting, quiet
   harbor). Same feed your production data pipeline would consume.
-- **199 passing tests** — pytest with `asyncio_mode = "auto"`; the
-  sim package has 195 unit tests, the AIS ingest endpoint has 4
-  end-to-end tests.
+- **402 passing tests** — pytest with `asyncio_mode = "auto"`;
+  the marketplace redesign (proposal composer, supplier gate,
+  preparation sweeper), IMPA-first catalog reader, clarification
+  thread, RBAC permissions, and the original sealed-bid /
+  counter-offer classification each have their own test files.
+  The full suite runs in ~12 s.
 
 ## Quick links
 
 - **[`REPORT.md`](./REPORT.md)** — the project story: motivation,
   what we built, what's not done, what we'd do next. Read this if
   you're evaluating the project.
-- **[`docs/architecture/`](./docs/architecture/)** — six deep-dive
+- **[`docs/architecture/`](./docs/architecture/)** — nine deep-dive
   documents on system topology, indexing, RBAC/security, offline-first,
-  catering & RFQ, and the Figma design system.
+  catering & RFQ, the Figma design system, the marketplace simulator,
+  the sealed-bid / counter-offer classification model, and the
+  marketplace redesign (fan-out, per-line decision, 24h window).
 - **[`LICENSE`](./LICENSE)** — MIT.
 - **Demo accounts** are listed in
   [Quickstart → Demo accounts](#demo-accounts-seeded) below.
@@ -63,14 +92,16 @@
 5. [Live Fleet Map](#live-fleet-map)
 6. [API tour](#api-tour)
 7. [AIS simulator](#ais-simulator)
-8. [Demo flows](#demo-flows)
-9. [Demo gotchas](#demo-gotchas)
-10. [Notifications](#notifications)
-11. [Troubleshooting](#troubleshooting)
-12. [Testing](#testing)
-13. [Production checklist](#production-checklist)
-14. [Contributor notes](#contributor-notes)
-15. [License](#license)
+8. [Marketplace redesign](#marketplace-redesign)
+9. [Demo flows](#demo-flows)
+10. [Demo gotchas](#demo-gotchas)
+11. [Permissions & sealed bids](#permissions--sealed-bids)
+12. [Notifications](#notifications)
+13. [Troubleshooting](#troubleshooting)
+14. [Testing](#testing)
+15. [Production checklist](#production-checklist)
+16. [Contributor notes](#contributor-notes)
+17. [License](#license)
 
 For the project story, design rationale, and what's next, see
 [`REPORT.md`](./REPORT.md). For deep-dive docs, see
@@ -88,6 +119,11 @@ rows. Production needs:
 | Browse a **5,000-row IMPA/ISSA catalog** in <50ms | PostgreSQL `tsvector` + GIN indexes, B+tree indexes on SKU/price/category                              |
 | **Offline ordering** when VSAT drops              | IndexedDB + Service Worker + replay engine with idempotency keys + conflict detection                  |
 | **Auth** that survives IP changes at sea          | JWT (RS256) with 8-day access + 30-day refresh, RBAC with `resource:action:scope`                      |
+| **Six-role RBAC with vessel scoping**             | Route-level `require_permission` + row-level `assert_vessel_access`; cross-vessel reads return 404     |
+| **Sealed-bid RFQ** for non-admin callers          | Response-side redaction in `rfq_serializers.py`; counter-offer terms classified `winner_only`          |
+| **Marketplace redesign** (fan-out + per-line)     | `compose_proposal` + `supplier_accept_slice`; 24h preparation window with backend sweeper             |
+| **IMPA-first ordering**                           | Order line has no price; IMPA typeahead in `OrderCreate`; ETA/ETD delivery gate; clarification thread |
+| **Supplier portal** with vessel redaction         | `GET /supplier-portal/rfqs`; suppliers see "Vessel #N" only; can-deliver-in-window gate before pricing |
 | **IDS/IPS** at the perimeter                      | Brute-force counter, port-scan detector, SQL/XSS injection filter, structured security events          |
 | **Per-nationality catering plans**                | Voyage algorithm: calorie targets × crew × days + buffer, menu templates per (nationality, meal_type)  |
 | **Supplier bidding** with weighted comparison     | RFQ → quotes → `compare_quotes` with price/lead-time/reliability/quality scores                        |
@@ -110,14 +146,17 @@ mock-up/
 │   ├── app/
 │   │   ├── api/v1/                   # Routers — one file per resource
 │   │   │   ├── auth.py               #   /auth/{login,refresh,logout,me}
-│   │   │   ├── catalog.py            #   /catalog/{products,categories,impa,issa,stats}
+│   │   │   ├── catalog.py            #   /catalog/{products,categories,impa,issa,stats,rfq-eligible}
 │   │   │   ├── catering.py           #   /catering/{menus,nationalities,provisioning-plans,…}
+│   │   │   ├── clarification.py      #   /orders/{id}/{clarify,clarify/answer,clarify/resolve}
 │   │   │   ├── customs.py            #   /customs/{countries,rules,port-regulations,evaluate}
 │   │   │   ├── dashboard.py          #   /dashboard/{overview,recent-orders,…}
+│   │   │   ├── marketplace.py        #   /marketplace/{candidates,compose,approve} (per-line decision)
 │   │   │   ├── notifications.py      #   /notifications (+ /unread-count, /{id}/read, /read-all)
 │   │   │   ├── orders.py             #   /orders + /{id}/transition (fires notification on transition)
 │   │   │   ├── ports.py              #   /ports (incl. /_/countries)
 │   │   │   ├── rfq.py                #   /rfq/{for-order,quotes,compare}
+│   │   │   ├── supplier_portal.py    #   /supplier-portal/{rfqs,rfqs/{id},rfqs/{id}/quote,quotes/{id}/accept,assignments}
 │   │   │   ├── sync.py               #   /sync/{replay,queue,queues,conflicts}
 │   │   │   ├── users.py              #   /users + /{id} + /me (via auth)
 │   │   │   ├── vessels.py            #   /vessels + /{id}
@@ -132,7 +171,13 @@ mock-up/
 │   │   │   └── migrations/           # Alembic
 │   │   │       └── versions/
 │   │   │           ├── 0001_initial.py
-│   │   │           └── 0002_ais_position_reports.py
+│   │   │           ├── 0002_ais_position_reports.py
+│   │   │           ├── 0003_market_sim_events.py
+│   │   │           ├── 0004_market_sim_event_visibility.py
+│   │   │           ├── 0005_marketplace_redesign.py
+│   │   │           ├── 0006_marketplace_enums.py
+│   │   │           ├── 0007_impa_first.py
+│   │   │           └── 0008_auditaction_values.py
 │   │   └── __main__.py               # `python -m app` shim
 │   ├── sim/                          # Synthetic AIS data simulator (standalone)
 │   │   ├── types.py                  #   Port, Vessel, Route, PositionReport, SimEvent
@@ -149,8 +194,11 @@ mock-up/
 │   │   └── __main__.py               #   `python -m sim` shim
 │   ├── scripts/seed.py               # Idempotent demo seeder (5 users, suppliers, ports…)
 │   ├── tests/
-│   │   ├── api/internal/test_ais_ingest.py   #   4 tests
-│   │   └── sim/                              #   195 tests across 9 files
+│   │   ├── api/internal/test_ais_ingest.py   #   4 tests — synthetic AIS ingest
+│   │   ├── api/                              # 96 tests — RBAC, RFQ, IMPA catalog, redaction, marketplace bugfixes
+│   │   ├── marketplace/                      # 64 tests — proposal composer, supplier gate, clarification thread, ETA snapshot
+│   │   ├── market_sim/                       # 39 tests — dry-run bid war, counter-offer visibility
+│   │   └── sim/                              # 199 tests across 9 files — port/vessel/geo math
 │   ├── pyproject.toml                # Project + ruff + mypy + pytest config
 │   ├── alembic.ini
 │   ├── Dockerfile                    # Reused by `backend` and `sim` services
@@ -162,11 +210,12 @@ mock-up/
 │   │   ├── components/
 │   │   │   ├── Layout.jsx            # Sidebar nav + header (theme/network/notifications/user)
 │   │   │   └── NotificationsPanel.jsx # Bell dropdown — list, mark read, mark all read
-│   │   ├── pages/                    # 15 page-level components
+│   │   ├── pages/                    # 18 page-level components
 │   │   │   ├── Login.jsx  Dashboard.jsx  Catalog.jsx  ProductDetail.jsx
 │   │   │   ├── Orders.jsx  OrderCreate.jsx  OrderDetail.jsx
 │   │   │   ├── RFQ.jsx  Catering.jsx  Customs.jsx
 │   │   │   ├── Ports.jsx  Vessels.jsx  FleetMap.jsx
+│   │   │   ├── Marketplace.jsx  SupplierPortal.jsx  Permissions.jsx
 │   │   │   ├── Sync.jsx  Settings.jsx
 │   │   ├── store/                    # Zustand: auth, theme, network, notifications
 │   │   ├── services/                 # Thin wrappers (e.g. notifications.js)
@@ -185,13 +234,16 @@ mock-up/
 │       ├── docker-compose.yml        # postgres + redis + backend + sim + frontend
 │       └── .env.example
 │
-├── docs/architecture/                # 6 deep-dive docs
-│   ├── 01-system-architecture.md     #   (196 lines) high-level topology
-│   ├── 02-indexing.md                #   (159 lines) catalog FTS + indexes
-│   ├── 03-rbac-security.md           #   (168 lines) auth + IDS/IPS
-│   ├── 04-offline-first.md           #   (198 lines) IndexedDB + replay
-│   ├── 05-catering-rfq.md            #   (173 lines) catering algorithm + RFQ scoring
-│   └── 06-figma-design-system.md     #   (163 lines) design tokens
+├── docs/architecture/                # 9 deep-dive docs
+│   ├── 01-system-architecture.md     #   high-level topology
+│   ├── 02-indexing.md                #   catalog FTS + indexes
+│   ├── 03-rbac-security.md           #   auth + IDS/IPS
+│   ├── 04-offline-first.md           #   IndexedDB + replay
+│   ├── 05-catering-rfq.md            #   catering algorithm + RFQ scoring
+│   ├── 06-figma-design-system.md     #   design tokens
+│   ├── 07-marketplace-sim.md         #   sealed-bid simulator (legacy)
+│   ├── 08-rbac-and-sealed-bidding.md #   RBAC + counter-offer classification
+│   └── 09-marketplace-redesign.md    #   fan-out + per-line + 24h window (replaces 07)
 │
 └── readme.md                         # ← you are here
 ```
@@ -232,13 +284,17 @@ On first boot the backend runs `alembic upgrade head` then
 The login form accepts **email or username** on the `username` field of
 the OAuth2 form. The seed creates these accounts:
 
-| Email                       | Username    | Password   | Role                 | Vessel |
-| --------------------------- | ----------- | ---------- | -------------------- | ------ |
-| `admin@avsglobal.com`       | `admin`     | `admin123` | `super_admin`        | —      |
-| `captain@avsglobal.com`     | `captain`   | `demo123`  | `vessel_captain`     | 0      |
-| `purchasing@avsglobal.com`  | `purchaser` | `demo123`  | `purchasing_officer` | 0      |
-| `steward@avsglobal.com`     | `steward`   | `demo123`  | `chief_steward`      | 0      |
-| `supplier@apcmarine.sg`     | `apcmarine` | `demo123`  | `supplier`           | —      |
+| Email                       | Username    | Password   | Role                 | Vessel | Notes |
+| --------------------------- | ----------- | ---------- | -------------------- | ------ | ----- |
+| `admin@avsglobal.com`       | `admin`     | `admin123` | `super_admin`        | —      | full access; can compose marketplace proposals |
+| `fleetadmin@avsglobal.com`  | `fleet`     | `demo123`  | `fleet_admin`        | —      | same as admin, scoped to the fleet |
+| `captain@avsglobal.com`     | `captain`   | `demo123`  | `vessel_captain`     | 0      | vessel-side read |
+| `purchasing@avsglobal.com`  | `purchaser` | `demo123`  | `purchasing_officer` | 0      | creates orders; approves proposals |
+| `steward@avsglobal.com`     | `steward`   | `demo123`  | `chief_steward`      | 0      | catering + clarification thread |
+| `supplier1@avsglobal.com`   | `supplier1` | `demo123`  | `supplier`           | —      | Rotterdam — only one seeded here |
+| `supplier2@avsglobal.com`   | `supplier2` | `demo123`  | `supplier`           | —      | Singapore — best for the marketplace demo |
+| `supplier3@avsglobal.com`   | `supplier3` | `demo123`  | `supplier`           | —      | Dubai |
+| `info@apcmarine.sg`         | `apcmarine` | `demo123`  | `supplier`           | —      | APC Marine (Singapore) — third-party demo supplier |
 
 **Change in prod.** The default super-admin password (`admin123`) is
 the one account that's *not* `demo123` — keep it out of any non-dev
@@ -445,9 +501,22 @@ All paths are relative to `http://localhost:8000` and prefixed with
 | Method | Path                            | Auth            | Purpose                                            |
 | ------ | ------------------------------- | --------------- | -------------------------------------------------- |
 | GET    | `/orders`                       | bearer          | Order list with status/date filters                |
-| POST   | `/orders`                       | `order:create`  | Create order (runs customs evaluation)             |
+| POST   | `/orders`                       | `order:create`  | Create order (IMPA-first, runs customs evaluation) |
 | GET    | `/orders/{id}`                  | bearer          | Order with items + RFQ list                        |
 | POST   | `/orders/{id}/transition`       | `order:write`   | Drive state machine (emits a `Notification` to the assignee — see [Notifications](#notifications)) |
+
+### Clarification thread
+
+The admin↔purchaser surface for handling ambiguous order details. Each
+entry has a `question`, an optional `answer`, and a `resolved_at`
+timestamp. Entries are append-only; both sides see the full thread.
+
+| Method | Path                                    | Auth                  | Purpose                                            |
+| ------ | --------------------------------------- | --------------------- | -------------------------------------------------- |
+| POST   | `/orders/{id}/clarify`                  | `marketplace:clarify` | Admin asks a question (flips order to `awaiting_clarification`) |
+| GET    | `/orders/{id}/clarify`                  | bearer                | Read the full thread                               |
+| POST   | `/orders/{id}/clarify/answer`           | `marketplace:clarify` | Purchaser replies (flips order back to `quoting`)  |
+| POST   | `/orders/{id}/clarify/resolve`          | `marketplace:clarify` | Mark an entry resolved                             |
 
 ### RFQ
 
@@ -457,7 +526,36 @@ All paths are relative to `http://localhost:8000` and prefixed with
 | POST   | `/rfq/for-order/{order_id}`           | `rfq:create`     | Build RFQ to suppliers at destination port       |
 | GET    | `/rfq/{rfq_id}`                       | bearer           | RFQ detail with all quotes                       |
 | POST   | `/rfq/quotes`                         | `quote:create`   | Supplier submits a quote                         |
-| POST   | `/rfq/{rfq_id}/compare`               | `rfq:award`      | Weighted bid comparison                          |
+| POST   | `/rfq/{rfq_id}/compare`               | `rfq:award`      | Weighted bid comparison (legacy — kept for backward compat) |
+
+### Marketplace (proposal composer)
+
+The replacement for the sealed-bid auction. The admin collects per-line
+quotes, picks a winning supplier per line, composes a proposal, and
+the purchaser approves it. After approval, the assigned suppliers get a
+24-hour window to accept.
+
+| Method | Path                                              | Auth                    | Purpose                                            |
+| ------ | ------------------------------------------------- | ----------------------- | -------------------------------------------------- |
+| GET    | `/marketplace/orders/{id}/candidates`             | `marketplace:compose`   | Per-line candidate suppliers with their best quote |
+| POST   | `/marketplace/orders/{id}/compose`                | `marketplace:compose`   | Compose the proposal (one slice per line)          |
+| POST   | `/marketplace/orders/{id}/approve`                | `marketplace:approve`   | Purchaser approves — creates `SupplierLineAssignment` rows and starts the 24h timer |
+| GET    | `/marketplace/orders/{id}`                        | bearer                  | Current proposal + slice state                     |
+
+### Supplier portal
+
+The supplier-facing API. The supplier is authenticated as a regular
+`supplier` user; the route resolves them to a `Supplier` row by matching
+`User.email == Supplier.contact_email`. Vessel identity is redacted to
+`"Vessel #N"` (CRC32 of vessel id) in every response.
+
+| Method | Path                                                  | Auth                       | Purpose                                            |
+| ------ | ----------------------------------------------------- | -------------------------- | -------------------------------------------------- |
+| GET    | `/supplier-portal/rfqs`                               | `supplier_portal:view`     | RFQs the supplier is invited to                    |
+| GET    | `/supplier-portal/rfqs/{rfq_id}`                      | `supplier_portal:view`     | RFQ detail (with vessel label, not vessel name)    |
+| POST   | `/supplier-portal/rfqs/{rfq_id}/quote`                | `supplier_portal:quote`    | Submit a quote; payload includes the IMPA-first `can_deliver_in_window` gate |
+| POST   | `/supplier-portal/quotes/{quote_id}/accept`           | `supplier_portal:accept`   | Supplier accepts their assigned slices             |
+| GET    | `/supplier-portal/assignments`                        | `supplier_portal:view`     | The supplier's post-approval slice list            |
 
 ### Catering
 
@@ -675,6 +773,63 @@ The simulator's design and the rationale behind the
 
 ---
 
+## Marketplace redesign
+
+The sealed-bid auction is gone. The new flow is **fan-out → per-line
+decision → 24-hour acceptance window**:
+
+1. **Admin sends the order to suppliers.** `POST /orders/{id}/transition`
+   with action `send_to_suppliers` flips the status from `draft` to
+   `quoting` and writes a `RFQ` row whose `extra->'invited_supplier_ids'`
+   lists the invited suppliers.
+2. **Each supplier opens `/supplier`.** They see the RFQ, decide
+   *"can I deliver this in the vessel's ETA→ETD window?"* (the
+   IMPA-first gate), and either accept-and-price every line or
+   decline with a reason. No price is sent until the gate is
+   resolved.
+3. **Admin opens `/marketplace`.** For each line, they see the
+   candidate suppliers with their price / lead time / score and pick
+   a winner. `POST /marketplace/orders/{id}/compose` writes a
+   `SupplierProposal` with one `SupplierLineAssignment` per line.
+4. **Purchaser opens `/orders/{id}`.** They see the proposal
+   summary, click **Approve**, and the status flips to `confirmed`.
+   Each assigned supplier gets a 24h window to confirm
+   (`POST /supplier-portal/quotes/{id}/accept`).
+5. **Sweeper.** A background task in the backend's lifespan
+   (`sweep_preparation_timeouts`) drops suppliers who didn't
+   confirm in 24h and re-broadcasts their slice to the next-ranked
+   supplier. The sweep is the only thing in this flow that runs
+   without a click.
+
+The full design — schema, status model, redaction invariants, the
+24h sweeper — is in
+[`docs/architecture/09-marketplace-redesign.md`](./docs/architecture/09-marketplace-redesign.md).
+
+### IMPA-first ordering
+
+Order lines no longer carry a price. The purchaser types a 6-digit
+IMPA code in `OrderCreate`, the typeahead resolves to a catalog
+row, and the supplier's first commit is the ETA/ETD window check
+*before* any per-line pricing. The reasoning is documented in the
+`IMPA-first` redesign deep-dive (currently in `docs/architecture/`
+under development; see [REPORT.md](./REPORT.md) for the rationale).
+
+The admin↔purchaser **clarification thread** is the surface for
+handling ambiguity (e.g. *"32-inch TV: OLED or QLED?"*). It's
+appended to the order detail page; both sides see the same view.
+
+### Supplier portal redaction
+
+Suppliers never see the vessel's real name. The redaction in
+`backend/app/services/redaction.py` is a CRC32 of the vessel id
+modulo 1000 — stable across requests for the same vessel,
+opaque across vessels. The supplier sees `"Vessel #438"` and
+nothing else; the ETA/ETD window is exposed in the RFQ detail
+so the supplier can decide "can I deliver in time" without
+needing to know who the vessel is.
+
+---
+
 ## Demo flows
 
 ### 1. Order flow
@@ -759,11 +914,12 @@ demo. Skim this before a live walkthrough.
 
 ### `draft` orders are not RFQ-eligible
 
-The /rfq page's order picker is filtered to `status = pending_approval`.
 A freshly created order sits in `draft` until you click **Submit for
 approval** on the order detail page. This is intentional (so the
 purchaser can iterate on a draft without spamming suppliers) but
-nothing in the UI shouts at you about it.
+nothing in the UI shouts at you about it. The marketplace flow
+starts from `pending_approval` (or `awaiting_clarification`, if
+the admin asked a question first).
 
 ### Rotterdam only has one eligible supplier in the seed
 
@@ -780,15 +936,116 @@ work.
 `SupplierQuote` has a `UniqueConstraint("rfq_id", "supplier_id")` —
 one bid per supplier per RFQ, ever. The marketplace simulator
 respects this. Add 2–3 products to an order for a richer leaderboard
-that actually shows the weighted scoring doing something interesting.
+that actually shows the per-line decision doing something interesting.
 
-### RFQ status values
+### Supplier login is by `User.email`, not by the supplier company name
 
-The full set is `draft | open | sent | closed | awarded | cancelled`.
-`compare_quotes` flips the RFQ to `awarded` when run with
-`save=True`. After that the endpoint returns 400 on re-simulation.
-For what-if exploration, the marketplace simulator endpoint accepts
-`?dry_run=true` to skip the state transition.
+The supplier-portal route resolves the supplier via
+`User.email == Supplier.contact_email`. The seed creates matching
+emails for every demo supplier (`supplier1@avsglobal.com` ↔ the
+Rotterdam supplier, etc.), so login is just
+`supplier2@avsglobal.com` / `demo123`. If you re-seed and a
+supplier's `contact_email` drifts from the matching User's email,
+the login returns 403 with the detail
+`"No supplier profile bound to this user account"`.
+
+### Marketplace flow: ask-clarification puts the order in limbo
+
+After `POST /orders/{id}/clarify` the order status is
+`awaiting_clarification` and the supplier portal will *not* show
+the RFQ until the purchaser answers (`POST /orders/{id}/clarify/answer`).
+The thread is append-only; both sides see the same view.
+
+---
+
+## Permissions & sealed bids
+
+The same platform serves six role archetypes and they see the
+world differently. The RBAC shape is real — the API enforces it
+on every protected route — and the frontend additionally gates
+its UI on the caller's roles and permissions.
+
+### Who sees what
+
+| Role | Marketplace sim | RFQ compare | Vessel scope |
+|------|----------------|-------------|--------------|
+| `super_admin` | Full leaderboard (names, prices, ratings, subscores) | Full results | All vessels |
+| `fleet_admin` | Same as `super_admin` | Same as `super_admin` | Their fleet |
+| `purchasing_officer` | **Sealed-bid** view (ranked "Bidder 1, Bidder 2, …", winner's total + lead time + score only) | "Re-rank bids (sealed)" — same endpoint, redacted response | Their vessel |
+| `vessel_captain` | Sealed view | Sealed view | Their vessel |
+| `chief_steward` | No access (no `rfq:simulate:own`) | No access (no `quotes:compare:own`) | Their vessel |
+| `supplier` | Their own bids + counter-offer terms they received (portal not shipped yet) | Their inbox | External |
+
+### Sealed bids
+
+A `purchasing_officer` running `POST /rfq/{id}/compare` or
+`POST /rfq/{id}/simulate` gets back a redacted shape:
+
+```json
+{
+  "results": [
+    { "rank": 1, "label": "Bidder 1", "total": 4250.00, "lead_time_days": 5,    "score": 0.91 },
+    { "rank": 2, "label": "Bidder 2", "total": null,    "lead_time_days": null, "score": 0.84 },
+    { "rank": 3, "label": "Bidder 3", "total": null,    "lead_time_days": null, "score": 0.77 }
+  ],
+  "winner_rank": 1
+}
+```
+
+The DB still holds the truth (supplier names, prices, ratings);
+the redaction happens at the API boundary in
+`backend/app/services/rfq_serializers.py`. Admin and fleet_admin
+see the full unsealed shape; everyone else gets the sealed view.
+A single RFQ can be viewed sealed by a purchaser and unsealed by
+an admin in the same session.
+
+Why response-side filtering, not a `sealed_bid_mode` flag on the
+RFQ itself? Because the data model doesn't need to know. The
+audit log, the counter-offer workflow, and the eventual supplier
+portal all need the real numbers regardless of who is asking.
+Filtering at the boundary is simpler and harder to bypass.
+
+### Counter-offer classification
+
+Counter-offer terms (target prices, lead-time squeeze) are
+classified procurement information. The engine tags the
+resulting `market_sim_events` row with
+`visibility=winner_only` and
+`visible_to_supplier_ids=[winner_supplier_id]`. The response
+serializer turns that into a redacted "Counter-offer sent to
+winner" stub for non-admin, non-winner callers.
+
+The rule is ready for the supplier portal even though the
+portal itself doesn't ship in this iteration — the moment a
+supplier endpoint queries the event log, the rule is already
+in place.
+
+### The `/permissions` page
+
+Visible to every authenticated user in the sidebar. Renders:
+
+- **You** — your roles, vessel scope, JWT subject.
+- **Your permissions** — every `resource:action:scope` string in
+  your token, grouped by resource.
+- **Role × permission matrix** (admin only) — every role from
+  `SYSTEM_ROLES` × every permission from `SYSTEM_PERMISSIONS`,
+  with green checks where the DB has a grant. Includes a
+  "Copy as markdown" button for the slide handout.
+- **Sealed-bid explainer** — what non-admin callers see vs.
+  what admins see, and why.
+
+### Vessel scoping
+
+A purchaser on vessel 0 gets 404 on RFQs / orders belonging to
+vessel 1, 2, 3, or 4 — not 403, so we don't leak resource
+existence across vessels. The check is
+`assert_vessel_access(token, vessel_id)` in
+`backend/app/deps/auth.py`. Admins and fleet_admins always pass
+(they own the fleet). External users with `vessel_id=null`
+(suppliers) are denied unless they have an admin role.
+
+The deep-dive lives in
+[`docs/architecture/08-rbac-and-sealed-bidding.md`](./docs/architecture/08-rbac-and-sealed-bidding.md).
 
 ---
 
@@ -876,6 +1133,30 @@ An async route is dereferencing a relationship after the session has
 been closed, or after the request has returned. Eager-load the
 relationship with `selectinload(...)` in the query, or add
 `lazy="selectin"` on the model relationship.
+
+> The most common form in the marketplace flow was the supplier
+> portal's list endpoint iterating `r.quotes` without a matching
+> `selectinload(RFQ.quotes)`. The fix is at
+> `backend/app/api/v1/supplier_portal.py:144` and the regression
+> test is `tests/api/test_marketplace_bugfixes.py::TestSupplierPortalListEagerLoads`.
+
+### `invalid input value for enum auditaction: "..."`
+
+The `AuditAction` enum binds its *value* (lowercase) to the PG enum,
+not the *name* (uppercase). The PG enum was extended by migration
+`0008_auditaction_values` to include the lowercase counterparts of
+the original 16 audit values, so every existing `AuditLog` write
+binds successfully. If you see this error, either the migration
+didn't apply (run `alembic upgrade head`) or a new enum member
+was added without extending the PG enum.
+
+### `no rows for one()` / `multiple rows for scalar_one()`
+
+Most common in the marketplace test suite when a fake session
+returns an empty list where the route expects a single row. The
+fix is to make the fake return a single row in `_FakeResult` (or
+add an extra payload to the `rows_per_call` list) so the route
+sees the same shape it would in production.
 
 ### Backend starts but every API call returns 500 with the same traceback
 
@@ -968,31 +1249,54 @@ network tab — the URL should end with
 
 ### Backend (pytest)
 
-The backend ships **199 tests** covering:
+The backend ships **402 tests** covering the synthetic AIS sim, the
+sealed-bid counter-offer classification, the RBAC permission
+matrix, the IMPA-first catalog reader, the marketplace redesign
+(proposal composer, supplier gate, preparation sweeper), the
+clarification thread, and the three bugfixes pinned in
+`test_marketplace_bugfixes.py`.
 
-| Test file                                | Count | Area                                                  |
-| ---------------------------------------- | ----- | ----------------------------------------------------- |
-| `tests/sim/test_types.py`                | 12    | Frozen dataclasses (Port, Vessel, PositionReport…)    |
-| `tests/sim/test_ports_and_vessels.py`    | 13    | Static fixtures (54 ports, 15 vessels)                |
-| `tests/sim/test_geo.py`                  | 31    | Pure math (Haversine, slerp, bearing)                 |
-| `tests/sim/test_routes.py`               | 13    | `build_route`, `build_circular_route`                 |
-| `tests/sim/test_world.py`                | 14    | `World.step()` tick loop, port events                 |
-| `tests/sim/test_events.py`               | 14    | `EventBatch` JSON adapter (pydantic contract)         |
-| `tests/sim/test_backend_client.py`       | 25    | httpx client, retry policy, injected vs owned client  |
-| `tests/sim/test_scenarios.py`            | 37    | 4 built-in scenarios + registry + world integration   |
-| `tests/sim/test_runner.py`               | 30    | CLI: `parse_args`, `build_runtime`, `run_loop`, `main`|
-| `tests/api/internal/test_ais_ingest.py`  | 4     | `/api/v1/internal/ais/ingest` end-to-end              |
-| **Total**                                | **199** | Full suite runs in **~5 seconds**                  |
+| Test file                                            | Count | Area                                                  |
+| ---------------------------------------------------- | ----- | ----------------------------------------------------- |
+| `tests/sim/test_types.py`                            | 12    | Frozen dataclasses (Port, Vessel, PositionReport…)    |
+| `tests/sim/test_ports_and_vessels.py`                | 13    | Static fixtures (54 ports, 15 vessels)                |
+| `tests/sim/test_geo.py`                              | 31    | Pure math (Haversine, slerp, bearing)                 |
+| `tests/sim/test_routes.py`                           | 13    | `build_route`, `build_circular_route`                 |
+| `tests/sim/test_world.py`                            | 14    | `World.step()` tick loop, port events                 |
+| `tests/sim/test_events.py`                           | 14    | `EventBatch` JSON adapter (pydantic contract)         |
+| `tests/sim/test_backend_client.py`                   | 3     | httpx client, retry policy, injected vs owned client  |
+| `tests/sim/test_scenarios.py`                        | 37    | 4 built-in scenarios + registry + world integration   |
+| `tests/sim/test_runner.py`                           | 20    | CLI: `parse_args`, `build_runtime`, `run_loop`, `main`|
+| `tests/api/internal/test_ais_ingest.py`              | 10    | `/api/v1/internal/ais/ingest` end-to-end              |
+| `tests/api/test_rbac.py`                             | 27    | Role × permission matrix; row-level vessel scoping   |
+| `tests/api/test_rfq_eligible.py`                     | 9     | RFQ eligibility filter                                |
+| `tests/api/test_counter_offer_visibility.py`         | 12    | Counter-offer terms classified `winner_only`         |
+| `tests/api/test_impa_catalog.py`                     | 9     | `/catalog/impa` shape (defensive `Array.isArray` reader) |
+| `tests/api/test_redaction.py`                        | 24    | Vessel label redaction (CRC32 → "Vessel #N")          |
+| `tests/api/test_marketplace_bugfixes.py`            | 5     | 3 marketplace-flow bugfix regressions (Sept 2026)     |
+| `tests/market_sim/test_market_sim.py`                | 7     | Legacy sealed-bid engine (kept for backward compat)   |
+| `tests/marketplace/test_clarification.py`            | 14    | Admin↔purchaser clarification thread                  |
+| `tests/marketplace/test_compose_proposal.py`         | 3     | Per-line proposal composer                            |
+| `tests/marketplace/test_eta_snapshot.py`              | (TestClass) | ETA/ETD snapshot from the latest AIS report    |
+| `tests/marketplace/test_preparation_timeout.py`      | (TestClass) | 24h preparation sweeper drops slow suppliers    |
+| `tests/marketplace/test_purchaser_approval.py`       | 6     | Purchaser approval flow                               |
+| `tests/marketplace/test_sealed_identities.py`        | 8     | Supplier identity stays sealed until approval         |
+| `tests/marketplace/test_supplier_gate.py`            | (TestClass) | IMPA-first "can deliver in window" gate            |
+| `tests/marketplace/test_supplier_portal.py`          | 11    | Supplier portal: list / detail / accept / assignments |
+| **Total**                                            | **402** | Full suite runs in **~12 seconds**                 |
 
-(The `199` number comes from `pytest --collect-only`; the lower
+(The `402` number comes from `pytest --collect-only`; the lower
 `def test_…` count you see from `grep` is because many tests live
-inside `class Test…` blocks.)
+inside `class Test…` blocks. Some `async def` test methods are
+shown as `(TestClass)` in the table because pytest renders them
+as `<Coroutine>` in `--collect-only` and a strict function count
+skips them — the totals still sum to 402.)
 
 **macOS / Linux**
 ```bash
 cd backend
 source .venv/bin/activate
-pytest                       # run all 199 tests
+pytest                       # run all 402 tests
 pytest -k search            # only tests whose name matches "search"
 pytest --cov=app             # with coverage report
 pytest -k "ingest or sim"    # run two slices at once
@@ -1002,7 +1306,7 @@ pytest -k "ingest or sim"    # run two slices at once
 ```powershell
 cd backend
 .venv\Scripts\Activate.ps1
-pytest                       # run all 199 tests
+pytest                       # run all 402 tests
 pytest -k search            # only tests whose name matches "search"
 pytest --cov=app             # with coverage report
 ```
@@ -1105,6 +1409,19 @@ They are **not** mirrors of each other. The backup folder is the
 active dev workspace; this folder is what gets pushed to GitHub.
 Content gets reviewed and selectively synced, not bulk-copied. The
 project story lives in [`REPORT.md`](./REPORT.md) and only here.
+
+### Demo seed lives in the backup folder, not here
+
+`backend/scripts/seed.py` is the most-tweaked file in the project
+— new demo products, supplier-account shuffles, AIS sim scenarios,
+port data all land there first. The canonical version lives in
+`mock-up-backup/backend/scripts/seed.py`. The version in this
+folder is the 2026-09-03 snapshot; if you re-seed and find
+something missing, check the backup folder for the latest.
+
+The standalone `backend/scripts/seed_demo_accounts.py` (a small
+helper for adding the 9 demo users on top of an existing seed)
+**is** mirrored.
 
 ### How the marketplace simulator fits
 

@@ -40,8 +40,13 @@ from app.models.supplier import (
     SupplierQuote,
     QuoteItem,
     BidComparison,
+    # Marketplace redesign (migration 0005)
+    LineDecision,
+    QuoteLineStatus,
+    AssignmentStatus,
+    OrderDecision,
+    SupplierLineAssignment,
 )
-from app.models.market_sim import MarketSimEvent, MarketSimEventType
 from app.models.port import (
     Country,
     Port,
@@ -62,6 +67,7 @@ from app.models.sync import (
 from app.models.audit import AuditLog, SecurityEvent
 from app.models.ais import AisPositionReport, AisEventType, AisSource
 from app.models.notification import Notification, NotificationType
+from app.models.market_sim import MarketSimEvent, MarketSimEventType
 
 __all__ = [
     "Base",
@@ -75,8 +81,11 @@ __all__ = [
     "ProvisioningPlan", "ProvisioningItem", "DailyMenu", "MealServing",
     "Supplier", "SupplierPort", "SupplierRating",
     "RFQ", "RFQItem", "SupplierQuote", "QuoteItem", "BidComparison",
+    "LineDecision", "QuoteLineStatus", "AssignmentStatus",
+    "OrderDecision", "SupplierLineAssignment",
     "SyncQueue", "SyncConflict", "OfflineAction", "DeviceRegistration",
     "AuditLog", "SecurityEvent",
     "AisPositionReport", "AisEventType", "AisSource",
     "Notification", "NotificationType",
+    "MarketSimEvent", "MarketSimEventType",
 ]

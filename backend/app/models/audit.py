@@ -48,6 +48,16 @@ class AuditAction(str, enum.Enum):
     RFQ_SENT = "rfq_sent"
     QUOTE_SUBMITTED = "quote_submitted"
     ORDER_PLACED = "order_placed"
+    # Marketplace redesign (migration 0005)
+    CLARIFICATION_REQUESTED = "clarification_requested"
+    CLARIFICATION_ANSWERED = "clarification_answered"
+    CLARIFICATION_RESOLVED = "clarification_resolved"
+    PROPOSAL_COMPOSED = "proposal_composed"
+    PROPOSAL_APPROVED = "proposal_approved"
+    PROPOSAL_REJECTED = "proposal_rejected"
+    SLICE_ASSIGNED = "slice_assigned"
+    SLICE_CONFIRMED = "slice_confirmed"
+    SLICE_DROPPED = "slice_dropped"
     OTHER = "other"
 
 
@@ -59,7 +69,28 @@ class AuditLog(Base, TimestampMixin):
     user_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
     )
-    action: Mapped[AuditAction] = mapped_column(Enum(AuditAction), nullable=False, index=True)
+    action: Mapped[AuditAction] = mapped_column(
+        Enum(
+            AuditAction,
+            # The PG enum has a mix of casings for historical
+            # reasons: the 16 original values are the uppercase
+            # NAMES (CREATE, READ, …) added by migration 0001,
+            # and the 9 marketplace values are the lowercase
+            # VALUES (clarification_requested, …) added by
+            # migration 0006. Force every bind to use the
+            # lowercase value (the Python `str` mixin already
+            # gives the value via str(member), but SQLAlchemy's
+            # PG Enum by default uses the *name* — `values_callable`
+            # is the explicit way to opt in to the value).
+            # Migration 0008 added the lowercase counterparts
+            # for the 16 originals so all 25 entries are
+            # accepted by the column.
+            values_callable=lambda enum_cls: [e.value for e in enum_cls],
+            name="auditaction",
+        ),
+        nullable=False,
+        index=True,
+    )
     resource: Mapped[str] = mapped_column(String(50), nullable=False, index=True)
     resource_id: Mapped[str | None] = mapped_column(String(80), nullable=True, index=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)

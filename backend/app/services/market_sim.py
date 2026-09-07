@@ -41,7 +41,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.market_sim import MarketSimEvent, MarketSimEventType
+from app.models.market_sim import EventVisibility, MarketSimEvent, MarketSimEventType
 from app.models.supplier import (
     ProductSupplier,
     RFQ,
@@ -513,12 +513,46 @@ async def run_market_sim(
         payload={"seed": run_seed, "dry_run": dry_run, "agents": len(agents), "bidders": len(bidding_agents)},
     ))
     if counter_offer_terms:
+        # Counter-offer classification (added 2026-09-03): the
+        # buyer's counter-offer terms are classified procurement
+        # information. Only the winning supplier may see them —
+        # leaking them to the other bidders would let them game
+        # round 2 to undercut the target exactly.
+        #
+        # We resolve the winner here, BEFORE the round's bids come
+        # in, from the round-1 scores stored on rfq.quotes (the sim
+        # write path persists round-1 bids as SupplierQuote rows
+        # during round 1 with source='sim'). For round 1, no
+        # counter_offer_terms should ever reach this code, but we
+        # default to public visibility in that case so a miscall
+        # doesn't accidentally hide something.
+        winner_supplier_id: UUID | None = None
+        if round1_scores := {
+            q.supplier_id: float(q.score)
+            for q in rfq.quotes if q.source == "sim"
+        }:
+            top_score = max(round1_scores.values())
+            top_supplier_ids = [
+                sid for sid, sc in round1_scores.items() if sc >= top_score - 1e-9
+            ]
+            if top_supplier_ids:
+                winner_supplier_id = top_supplier_ids[0]
         new_events.append(MarketSimEvent(
             rfq_id=rfq.id,
             ts=now,
             round=round_n,
             event_type=MarketSimEventType.COUNTER_OFFER.value,
             payload=counter_offer_terms,
+            # Classified: only the winner sees the terms. Admin sees
+            # them too via the unsealed serializer path.
+            visibility=(
+                EventVisibility.WINNER_ONLY.value
+                if winner_supplier_id is not None
+                else EventVisibility.PUBLIC.value
+            ),
+            visible_to_supplier_ids=(
+                [winner_supplier_id] if winner_supplier_id is not None else None
+            ),
         ))
 
     submitted_quote_ids: list[UUID] = []
@@ -629,6 +663,15 @@ async def run_market_sim(
                 "event_type": e.event_type,
                 "supplier_id": str(e.supplier_id) if e.supplier_id else None,
                 "payload": e.payload,
+                # Visibility + supplier allow-list for counter-offer
+                # classification. Both default to None for events
+                # that don't set them; the response serializer
+                # reads them to decide what to redact.
+                "visibility": e.visibility,
+                "visible_to_supplier_ids": (
+                    [str(s) for s in e.visible_to_supplier_ids]
+                    if e.visible_to_supplier_ids else None
+                ),
             }
             for e in new_events
         ],

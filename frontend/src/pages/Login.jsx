@@ -163,11 +163,19 @@ export default function LoginPage() {
             <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 mb-2">
               Demo accounts
             </div>
-            <div className="space-y-1 text-xs text-slate-600 dark:text-slate-400 font-mono">
+            <div className="space-y-1 text-[11px] text-slate-600 dark:text-slate-400 font-mono">
               <div>admin@avsglobal.com / admin123 <span className="text-slate-400">— super_admin</span></div>
-              <div>captain@avsglobal.com / demo123 <span className="text-slate-400">— captain</span></div>
-              <div>purchasing@avsglobal.com / demo123 <span className="text-slate-400">— purchasing</span></div>
-              <div>steward@avsglobal.com / demo123 <span className="text-slate-400">— steward</span></div>
+              <div>fleetadmin@avsglobal.com / demo123 <span className="text-slate-400">— fleet_admin</span></div>
+              <div>captain@avsglobal.com / demo123 <span className="text-slate-400">— vessel_captain</span></div>
+              <div>purchasing@avsglobal.com / demo123 <span className="text-slate-400">— purchasing_officer</span></div>
+              <div>steward@avsglobal.com / demo123 <span className="text-slate-400">— chief_steward</span></div>
+              <div className="pt-1.5 mt-1.5 border-t border-slate-200 dark:border-slate-700 text-[10px] uppercase tracking-wide text-slate-500">
+                Suppliers (use the Supplier Portal in the sidebar)
+              </div>
+              <div>supplier@apcmarine.sg / demo123 <span className="text-slate-400">— APC Marine (Singapore)</span></div>
+              <div>supplier1@avsglobal.com / demo123 <span className="text-slate-400">— Rotterdam Demo Supplies</span></div>
+              <div>supplier2@avsglobal.com / demo123 <span className="text-slate-400">— Singapore Demo Supplies</span></div>
+              <div>supplier3@avsglobal.com / demo123 <span className="text-slate-400">— Dubai Demo Supplies</span></div>
             </div>
           </div>
         </div>

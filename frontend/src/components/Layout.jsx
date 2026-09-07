@@ -1,8 +1,7 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   LayoutDashboard,
-  Package,
   ClipboardList,
   Ship,
   Map,
@@ -10,9 +9,11 @@ import {
   UtensilsCrossed,
   Gavel,
   BriefcaseBusiness,
+  Truck,
   ShieldCheck,
   RefreshCw,
   Settings,
+  KeyRound,
   LogOut,
   Wifi,
   WifiOff,
@@ -31,23 +32,49 @@ import { useNotificationsStore } from '../store/notifications'
 import NotificationsPanel from './NotificationsPanel'
 import clsx from 'clsx'
 
+/**
+ * Sidebar nav. Each entry may declare `roles` (any-of match) and/or
+ * `permissions` (every-of match) to hide itself from callers who
+ * can't use it. The /permissions page is the exception: it has
+ * neither gate, because every authenticated user can see their own
+ * role/permission view (and admins get the matrix on top of that).
+ */
 const nav = [
   { to: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { to: '/catalog', label: 'Catalog (IMPA/ISSA)', icon: Package },
+  // IMPA-first redesign: the catalog is folded into the order
+  // page (the IMPA typeahead inside OrderCreate.jsx). The
+  // standalone /catalog page is a deprecation stub. The sidebar
+  // entry is dropped; users navigate to the order page directly.
   { to: '/orders', label: 'Orders', icon: ClipboardList },
   { to: '/vessels', label: 'Vessels', icon: Ship },
   { to: '/fleet-map', label: 'Live Fleet Map', icon: Map },
   { to: '/ports', label: 'Ports', icon: MapPin },
   { to: '/catering', label: 'Catering & Provisioning', icon: UtensilsCrossed },
   { to: '/rfq', label: 'RFQ & Bidding', icon: Gavel },
-  { to: '/market-sim', label: 'Marketplace Sim', icon: BriefcaseBusiness },
+  {
+    to: '/marketplace',
+    label: 'Marketplace',
+    icon: BriefcaseBusiness,
+    // The admin's per-line compose step. Admin + fleet_admin
+    // (super_admin role covers it via the any-of match).
+    permissions: [['marketplace', 'compose', 'global']],
+  },
+  {
+    to: '/supplier',
+    label: 'Supplier Portal',
+    icon: Truck,
+    roles: ['supplier'],
+  },
   { to: '/customs', label: 'Customs & Regulations', icon: ShieldCheck },
   { to: '/sync', label: 'Offline Sync', icon: RefreshCw },
+  // Permissions — everyone sees their own; admins see the matrix
+  // on top. No `roles` or `permissions` gate so it never hides.
+  { to: '/permissions', label: 'Permissions', icon: KeyRound },
 ]
 
 export default function Layout() {
   const navigate = useNavigate()
-  const { user, clear, hasRole } = useAuthStore()
+  const { user, clear, hasRole, hasPermission } = useAuthStore()
   const { online, vsat, pendingActions } = useNetworkStore()
   const { theme, setTheme } = useThemeStore()
   const { panelOpen, togglePanel, unreadCount, refreshUnreadCount } = useNotificationsStore()
@@ -62,57 +89,76 @@ export default function Layout() {
     return () => clearInterval(id)
   }, [user, refreshUnreadCount])
 
+  // Filter the sidebar by the caller's roles + permissions. A nav
+  // entry without `roles` / `permissions` is always visible; otherwise
+  // it requires the matching role/permission to be present. This is
+  // a UX nicety — the API still rejects requests from callers who
+  // lack the permission, so this is defense-in-depth, not the
+  // primary enforcement.
+  const visibleNav = useMemo(() => {
+    return nav.filter(item => {
+      if (item.roles && !item.roles.some(r => hasRole(r))) return false
+      if (item.permissions && !item.permissions.every(([res, act, sc]) => hasPermission(res, act, sc))) return false
+      return true
+    })
+  }, [hasRole, hasPermission])
+
   return (
     <div className="flex h-screen bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100">
-      {/* Sidebar */}
-      <aside className="hidden lg:flex w-64 flex-col bg-slate-900 dark:bg-slate-950 text-slate-100 border-r border-slate-800">
-        <div className="h-16 flex items-center gap-2 px-5 border-b border-slate-800">
-          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center">
+      {/* Sidebar — always visible; the page reflows in narrow windows */}
+      <aside className="flex w-16 lg:w-64 flex-col bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 border-r border-slate-200 dark:border-slate-800 transition-[width] duration-200">
+        <div className="h-16 flex items-center gap-2 px-3 lg:px-5 border-b border-slate-200 dark:border-slate-800">
+          <div className="w-9 h-9 rounded-lg bg-gradient-to-br from-blue-500 to-cyan-500 flex items-center justify-center flex-shrink-0">
             <Anchor className="w-5 h-5 text-white" />
           </div>
-          <div>
+          <div className="hidden lg:block">
             <div className="font-bold tracking-tight text-base">AVS Global</div>
-            <div className="text-xs text-slate-400">Ship Supply Ops</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">Ship Supply Ops</div>
           </div>
         </div>
 
-        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-0.5">
-          {nav.map(item => (
+        <nav className="flex-1 overflow-y-auto py-4 px-2 lg:px-3 space-y-0.5">
+          {visibleNav.map(item => (
             <NavLink
               key={item.to}
               to={item.to}
+              title={item.label}
               className={({ isActive }) =>
                 clsx(
                   'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium transition-colors',
                   isActive
-                    ? 'bg-blue-600/20 text-blue-300'
-                    : 'text-slate-300 hover:bg-slate-800 hover:text-white'
+                    ? 'bg-blue-50 text-blue-700 dark:bg-blue-600/20 dark:text-blue-300'
+                    : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
                 )
               }
             >
-              <item.icon className="w-4 h-4" />
-              <span>{item.label}</span>
+              <item.icon className="w-4 h-4 flex-shrink-0" />
+              <span className="hidden lg:inline">{item.label}</span>
             </NavLink>
           ))}
         </nav>
 
-        <div className="p-3 border-t border-slate-800 space-y-1">
+        <div className="p-2 lg:p-3 border-t border-slate-200 dark:border-slate-800 space-y-1">
           <NavLink
             to="/settings"
             className={({ isActive }) =>
               clsx(
                 'flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium',
-                isActive ? 'bg-slate-800 text-white' : 'text-slate-400 hover:text-white'
+                isActive
+                  ? 'bg-slate-100 text-slate-900 dark:bg-slate-800 dark:text-white'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800'
               )
             }
+            title="Settings"
           >
-            <Settings className="w-4 h-4" /> Settings
+            <Settings className="w-4 h-4 flex-shrink-0" /> <span className="hidden lg:inline">Settings</span>
           </NavLink>
           <button
             onClick={() => { clear(); navigate('/') }}
-            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-white hover:bg-slate-800"
+            className="w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 dark:text-slate-400 dark:hover:text-white dark:hover:bg-slate-800"
+            title="Sign out"
           >
-            <LogOut className="w-4 h-4" /> Sign out
+            <LogOut className="w-4 h-4 flex-shrink-0" /> <span className="hidden lg:inline">Sign out</span>
           </button>
         </div>
       </aside>

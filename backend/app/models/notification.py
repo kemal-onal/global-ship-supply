@@ -35,6 +35,17 @@ class NotificationType(str, enum.Enum):
 
     ORDER_TRANSITION = "order_transition"
     RFQ_AWARDED = "rfq_awarded"
+    # Marketplace redesign (migration 0005). The company (admin)
+    # asks a question on the order; the purchaser answers. Two
+    # distinct notification types so the bell can render them
+    # differently and a user can mute one without the other.
+    CLARIFICATION_REQUESTED = "clarification_requested"
+    CLARIFICATION_ANSWERED = "clarification_answered"
+    # Supplier portal: a supplier has a slice to confirm (the
+    # 24h acceptance window starts when this fires).
+    SLICE_ASSIGNED = "slice_assigned"
+    SLICE_CONFIRMED = "slice_confirmed"
+    SLICE_DROPPED = "slice_dropped"
     SYSTEM = "system"
 
 

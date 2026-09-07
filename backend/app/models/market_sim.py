@@ -26,7 +26,7 @@ from sqlalchemy import (
     Integer,
     String,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, TimestampMixin
@@ -40,6 +40,23 @@ class MarketSimEventType(str, enum.Enum):
     ROUND_CLOSE = "round_close"      # compare_quotes picked a winner
     COUNTER_OFFER = "counter_offer"  # buyer sent back a counter-offer
     RUN_END = "run_end"              # run completed (round 1 or round 2)
+
+
+class EventVisibility(str, enum.Enum):
+    """Who may see a ``market_sim_events`` row's full payload.
+
+    * ``public`` — every authenticated caller can see the full event
+      (used for ``run_start``, ``bid_arrived``, ``round_close``,
+      ``run_end``, and any future event that isn't classified).
+    * ``winner_only`` — only the winning supplier (and admins) can
+      see the full payload. Used for ``counter_offer`` events: the
+      buyer's counter-offer terms are classified procurement
+      information and must not leak to the losing bidders — that
+      would let them game round 2 to undercut the target exactly.
+    """
+
+    PUBLIC = "public"
+    WINNER_ONLY = "winner_only"
 
 
 class MarketSimEvent(Base, TimestampMixin):
@@ -76,12 +93,37 @@ class MarketSimEvent(Base, TimestampMixin):
         nullable=True,
     )
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Classification (added 2026-09-03, migration 0004). The
+    # default of 'public' covers all rows that existed before the
+    # counter-offer was classified — only new counter_offer events
+    # use 'winner_only'.
+    visibility: Mapped[str] = mapped_column(
+        String(20), nullable=False, default=EventVisibility.PUBLIC.value, index=True,
+    )
+    # Supplier ids that may see the full payload when visibility is
+    # 'winner_only'. Populated by the engine with [winner.supplier_id]
+    # for counter_offer events. Today no supplier endpoint reads
+    # this, but the column is in place so the rule works the moment
+    # a supplier portal ships.
+    visible_to_supplier_ids: Mapped[list[UUID] | None] = mapped_column(
+        ARRAY(UUID(as_uuid=True)), nullable=True,
+    )
 
     __table_args__ = (
         # Dominant read: "all events for this RFQ in time order".
         Index("ix_market_sim_events_rfq_id_ts", "rfq_id", "ts"),
+        # Dominant read for the supplier portal (when it ships):
+        # "events for this RFQ that this supplier can see".
+        Index("ix_market_sim_events_visibility", "rfq_id", "visibility"),
         CheckConstraint("round >= 1", name="ck_market_sim_events_round_positive"),
+        # Belt-and-braces DB-level check on the visibility value —
+        # a bad write from a future code path can't smuggle a typo
+        # past the application.
+        CheckConstraint(
+            "visibility IN ('public', 'winner_only')",
+            name="ck_market_sim_events_visibility",
+        ),
     )
 
 
-__all__ = ["MarketSimEvent", "MarketSimEventType"]
+__all__ = ["MarketSimEvent", "MarketSimEventType", "EventVisibility"]
