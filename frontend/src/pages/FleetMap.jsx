@@ -26,6 +26,10 @@ const SCENARIOS = [
   { value: 'quiet_harbor', label: 'Quiet Harbor' },
 ]
 
+function labelForScenario(value) {
+  return SCENARIOS.find(s => s.value === value)?.label ?? value
+}
+
 // Stable per-vessel color from a small palette (cycle if >8 vessels).
 const VESSEL_COLORS = [
   '#3b82f6', // blue
@@ -52,8 +56,18 @@ function formatTs(iso) {
   }
 }
 
+// The default selected scenario is whatever the live sim is currently
+// running (so the user sees vessels the first time they land on the page).
+// ``default_med`` is the sim's own default — the backend serves whatever
+// scenario its current sim process is configured with, and the dropdown
+// is purely a client-side filter on top of that. We pick ``default_med``
+// because if the sim is running on its default, this matches; if it's
+// running another scenario the user can pick it from the dropdown to
+// filter, and the page will just show "no data" until they do.
+const DEFAULT_SCENARIO = 'default_med'
+
 export default function FleetMapPage() {
-  const [scenario, setScenario] = useState('suez_blockage')
+  const [scenario, setScenario] = useState(DEFAULT_SCENARIO)
   const mapElRef = useRef(null)
   const mapRef = useRef(null)
   const trailLayerRef = useRef(null)
@@ -225,10 +239,14 @@ export default function FleetMapPage() {
         )}
         {!isLoading && vessels.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-            <div className="bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-800 rounded-xl px-6 py-4 text-center shadow-lg">
-              <div className="font-semibold mb-1">No position data yet</div>
+            <div className="bg-white/95 dark:bg-slate-900/95 border border-slate-200 dark:border-slate-800 rounded-xl px-6 py-4 text-center shadow-lg max-w-md">
+              <div className="font-semibold mb-1">No position data for {labelForScenario(scenario)}</div>
               <div className="text-sm text-slate-500">
-                Start the simulator with the <code className="px-1.5 py-0.5 bg-slate-100 dark:bg-slate-800 rounded">suez_blockage</code> scenario to see vessels move.
+                The simulator is probably running a different scenario.
+                Switch the dropdown to match what the backend is
+                currently emitting, or restart the simulator with the
+                <code className="px-1.5 py-0.5 mx-1 bg-slate-100 dark:bg-slate-800 rounded">{scenario}</code>
+                scenario.
               </div>
             </div>
           </div>

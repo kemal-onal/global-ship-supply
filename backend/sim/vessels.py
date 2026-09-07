@@ -32,85 +32,75 @@ from .types import Vessel, VesselType
 # Each tuple: (mmsi, imo, name, vessel_type, flag, length, beam, draught, max_speed)
 # All MMSIs use MID 9xx (unassigned) so they're obviously synthetic.
 VESSELS: list[Vessel] = [
-    # --- Container ships (Asia ↔ Europe / Trans-Pacific) ---
+    # The simulator is wired to the *seed* vessel fleet. MMSI / IMO /
+    # name / specs here must match the rows in ``scripts/seed.py``
+    # exactly — the ETA snapshot service joins AIS reports to seed
+    # vessels on MMSI, and the marketplace UI reads ``vessel.name``
+    # and ``vessel.vessel_type`` from the seed table. A mismatch
+    # (older versions of this file used a parallel "MV NORTHERN STAR"
+    # fleet with ``901xxxxxx`` MMSIs) silently broke ETA snapshots:
+    # the AIS feed would have live data, the seed vessel would have
+    # an MMSI, but the join key never matched and the marketplace
+    # UI showed the "no AIS ETA snapshot" warning.
     Vessel(
-        mmsi="901000001", imo="9900001", name="MV NORTHERN STAR",
-        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="HK",
-        length_m=300.0, beam_m=48.0, draught_m=14.5, max_speed_knots=22.0,
+        mmsi="900000001", imo="9464567", name="MV Marmara",
+        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="TR",
+        length_m=350.0, beam_m=48.0, draught_m=15.5, max_speed_knots=22.0,
     ),
     Vessel(
-        mmsi="901000002", imo="9900002", name="MV PACIFIC HORIZON",
-        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="SG",
-        length_m=335.0, beam_m=54.0, draught_m=15.0, max_speed_knots=23.0,
-    ),
-    Vessel(
-        mmsi="901000003", imo="9900003", name="MV EASTERN PROMISE",
-        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="MH",
-        length_m=290.0, beam_m=45.0, draught_m=14.0, max_speed_knots=21.0,
-    ),
-    Vessel(
-        mmsi="901000004", imo="9900004", name="MV CARGO PIONEER",
-        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="LR",
-        length_m=260.0, beam_m=42.0, draught_m=13.5, max_speed_knots=20.0,
-    ),
-    # --- Bulk carriers ---
-    Vessel(
-        mmsi="902000001", imo="9901001", name="MV IRON BULKER",
+        mmsi="900000002", imo="9789123", name="MV Aegean",
         vessel_type=VesselType.BULK_CARRIER, flag_iso2="GR",
-        length_m=225.0, beam_m=32.0, draught_m=14.0, max_speed_knots=15.0,
+        length_m=290.0, beam_m=45.0, draught_m=18.0, max_speed_knots=20.0,
     ),
     Vessel(
-        mmsi="902000002", imo="9901002", name="MV GRAIN VENTURE",
-        vessel_type=VesselType.BULK_CARRIER, flag_iso2="PA",
-        length_m=190.0, beam_m=30.0, draught_m=11.0, max_speed_knots=14.0,
+        mmsi="900000003", imo="9598231", name="MV Bosphorus",
+        vessel_type=VesselType.TANKER, flag_iso2="PA",
+        length_m=330.0, beam_m=60.0, draught_m=20.5, max_speed_knots=24.0,
     ),
     Vessel(
-        mmsi="902000003", imo="9901003", name="MV COAL CARRIER",
-        vessel_type=VesselType.BULK_CARRIER, flag_iso2="MT",
-        length_m=200.0, beam_m=32.0, draught_m=12.5, max_speed_knots=14.5,
-    ),
-    # --- Tankers ---
-    Vessel(
-        mmsi="903000001", imo="9902001", name="MT CRUDE VOYAGER",
-        vessel_type=VesselType.TANKER, flag_iso2="MH",
-        length_m=330.0, beam_m=58.0, draught_m=20.0, max_speed_knots=15.5,
+        mmsi="900000004", imo="9843210", name="MV Antalya",
+        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="TR",
+        length_m=300.0, beam_m=42.0, draught_m=14.0, max_speed_knots=21.0,
     ),
     Vessel(
-        mmsi="903000002", imo="9902002", name="MT PRODUCT EXPRESS",
-        vessel_type=VesselType.TANKER, flag_iso2="LR",
-        length_m=185.0, beam_m=32.0, draught_m=11.5, max_speed_knots=14.5,
-    ),
-    Vessel(
-        mmsi="903000003", imo="9902003", name="MT LNG AURORA",
-        vessel_type=VesselType.LNG_CARRIER, flag_iso2="BS",
-        length_m=290.0, beam_m=46.0, draught_m=12.0, max_speed_knots=19.5,
-    ),
-    # --- General cargo / reefer / roro ---
-    Vessel(
-        mmsi="904000001", imo="9903001", name="MV GENERAL TRADER",
-        vessel_type=VesselType.GENERAL_CARGO, flag_iso2="CY",
-        length_m=140.0, beam_m=22.0, draught_m=8.5, max_speed_knots=16.0,
-    ),
-    Vessel(
-        mmsi="904000002", imo="9903002", name="MV REEF STAR",
-        vessel_type=VesselType.REEFER, flag_iso2="PA",
-        length_m=155.0, beam_m=24.0, draught_m=9.0, max_speed_knots=18.0,
-    ),
-    Vessel(
-        mmsi="904000003", imo="9903003", name="MV DRIVE TRADER",
-        vessel_type=VesselType.RORO, flag_iso2="NO",
-        length_m=200.0, beam_m=32.0, draught_m=10.5, max_speed_knots=19.0,
-    ),
-    # --- A second wave for traffic density ---
-    Vessel(
-        mmsi="901000005", imo="9900005", name="MV ATLANTIC DAWN",
+        mmsi="900000005", imo="9711234", name="MV Pacific Voyager",
         vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="LR",
-        length_m=275.0, beam_m=44.0, draught_m=14.0, max_speed_knots=21.0,
+        length_m=360.0, beam_m=51.0, draught_m=16.0, max_speed_knots=23.0,
     ),
     Vessel(
-        mmsi="902000004", imo="9901004", name="MV ORE MASTER",
-        vessel_type=VesselType.BULK_CARRIER, flag_iso2="HK",
-        length_m=210.0, beam_m=32.0, draught_m=13.0, max_speed_knots=15.0,
+        mmsi="900000006", imo="9634567", name="MV North Star",
+        vessel_type=VesselType.BULK_CARRIER, flag_iso2="MH",
+        length_m=280.0, beam_m=43.0, draught_m=17.5, max_speed_knots=19.0,
+    ),
+    Vessel(
+        mmsi="900000007", imo="9754321", name="MV Istanbul",
+        vessel_type=VesselType.GENERAL_CARGO, flag_iso2="TR",
+        length_m=150.0, beam_m=23.0, draught_m=9.5, max_speed_knots=18.0,
+    ),
+    Vessel(
+        mmsi="900000008", imo="9823456", name="MV Rotterdam Express",
+        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="NL",
+        length_m=340.0, beam_m=47.0, draught_m=15.0, max_speed_knots=22.0,
+    ),
+    Vessel(
+        mmsi="900000009", imo="9987654", name="MV Singapore Pearl",
+        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="SG",
+        length_m=320.0, beam_m=46.0, draught_m=14.5, max_speed_knots=21.0,
+    ),
+    Vessel(
+        mmsi="900000010", imo="9645123", name="MV Dubai Star",
+        vessel_type=VesselType.LNG_CARRIER, flag_iso2="AE",
+        length_m=290.0, beam_m=47.0, draught_m=12.0, max_speed_knots=26.0,
+    ),
+    Vessel(
+        mmsi="900000011", imo="9543210", name="MV Hamburg",
+        vessel_type=VesselType.CONTAINER_SHIP, flag_iso2="DE",
+        length_m=335.0, beam_m=48.0, draught_m=15.2, max_speed_knots=22.0,
+    ),
+    Vessel(
+        mmsi="900000012", imo="9734567", name="MV Yokohama",
+        vessel_type=VesselType.REEFER, flag_iso2="JP",
+        length_m=180.0, beam_m=28.0, draught_m=9.0, max_speed_knots=20.0,
     ),
 ]
 

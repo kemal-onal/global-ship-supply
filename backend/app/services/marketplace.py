@@ -231,7 +231,7 @@ async def supplier_submit_quote(
     supplier: Supplier,
     *,
     lines: list[dict[str, Any]],
-    lead_time_days: int,
+    lead_time_days: int | None = None,
     payment_terms: str | None = None,
     notes: str | None = None,
     source: str = "portal",
@@ -327,7 +327,11 @@ async def supplier_submit_quote(
             tax=0,
             shipping=0,
             total=0,
-            lead_time_days=lead_time_days,
+            # IMPA-first gate click: lead time is unknown until
+            # the supplier opens the line picker. Fall back to
+            # the model's default (7) so the NOT NULL column
+            # constraint is satisfied.
+            lead_time_days=lead_time_days if lead_time_days is not None else 7,
             payment_terms=payment_terms,
             notes=notes,
             source=source,
@@ -358,7 +362,7 @@ async def supplier_submit_quote(
             tax=0,
             shipping=0,
             total=0,
-            lead_time_days=lead_time_days,
+            lead_time_days=lead_time_days if lead_time_days is not None else 7,
             payment_terms=payment_terms,
             notes=notes,
             source=source,
@@ -373,12 +377,29 @@ async def supplier_submit_quote(
         if rfq.responded_count >= rfq.invited_count:
             rfq.status = RFQStatus.CLOSED
             order = await _load_order(db, rfq.order_id)
-            if order is not None and order.status == OrderStatus.QUOTING:
+            if order is not None and order.status in (
+                # Marketplace redesign's quoting state plus the
+                # legacy sealed-bid predecessors. Orders that
+                # were started via build_rfq_for_order before the
+                # redesign still live in rfq_in_progress; the
+                # redesign never migrated them.
+                OrderStatus.QUOTING,
+                OrderStatus.RFQ_IN_PROGRESS,
+                OrderStatus.BIDDING,
+                OrderStatus.AWAITING_CONFIRMATION,
+            ):
                 order.status = OrderStatus.READY_FOR_COMPOSE
         db.add(quote)
         return quote
 
     # can_deliver_in_window is True — the supplier is in.
+    # The supplier may submit a "yes" gate click with no lines
+    # yet (the form on the supplier portal saves the decision
+    # first, then opens the line picker), or a full bid with
+    # lines + a real lead_time. The "no lines" case just writes
+    # a zero-total quote; the supplier will re-submit once they
+    # have their numbers.
+    effective_lead_time = lead_time_days if lead_time_days is not None else 7
     subtotal = 0.0
     quote_items: list[QuoteItem] = []
     decision_method: str | None = None
@@ -440,7 +461,10 @@ async def supplier_submit_quote(
         tax=0,
         shipping=0,
         total=round(subtotal, 4),
-        lead_time_days=lead_time_days,
+        # Gate click may arrive without a lead time yet (the
+        # supplier hasn't decided); fall back to 7 for the
+        # NOT NULL column.
+        lead_time_days=effective_lead_time,
         payment_terms=payment_terms,
         notes=notes,
         source=source,
@@ -456,9 +480,18 @@ async def supplier_submit_quote(
         rfq.status = RFQStatus.CLOSED
         # Order moves to READY_FOR_COMPOSE so the company knows
         # they can proceed. Deadline-based auto-progress is a
-        # background task (see prepare_deadline_sweeper).
+        # background task (see prepare_deadline_sweeper). The
+        # legacy sealed-bid predecessors (rfq_in_progress /
+        # bidding / awaiting_confirmation) are also valid sources
+        # — orders started before the marketplace redesign never
+        # went through the new fan-out.
         order = await _load_order(db, rfq.order_id)
-        if order is not None and order.status == OrderStatus.QUOTING:
+        if order is not None and order.status in (
+            OrderStatus.QUOTING,
+            OrderStatus.RFQ_IN_PROGRESS,
+            OrderStatus.BIDDING,
+            OrderStatus.AWAITING_CONFIRMATION,
+        ):
             order.status = OrderStatus.READY_FOR_COMPOSE
     db.add(quote)
     return quote
@@ -509,10 +542,50 @@ async def compose_proposal(
     order = await _load_order(db, rfq.order_id)
     if order is None:
         raise ValueError(f"Order {rfq.order_id} not found")
-    if order.status not in (OrderStatus.QUOTING, OrderStatus.READY_FOR_COMPOSE):
+    # Accept the marketplace redesign's quoting / ready_for_compose
+    # states plus the legacy sealed-bid predecessors
+    # (rfq_in_progress / bidding / awaiting_confirmation) that the
+    # 0005_marketplace_redesign migration mapped to QUOTING. RFQs
+    # built via the legacy ``build_rfq_for_order`` service
+    # (app/services/rfq.py) leave the order in
+    # ``rfq_in_progress`` until the admin runs the proposal
+    # composer; same for orders that were started before the
+    # marketplace redesign and are still in flight. Without this
+    # fallback the admin sees "Order is rfq_in_progress; cannot
+    # compose proposal" and is stuck.
+    if order.status not in (
+        OrderStatus.QUOTING,
+        OrderStatus.READY_FOR_COMPOSE,
+        OrderStatus.RFQ_IN_PROGRESS,
+        OrderStatus.BIDDING,
+        OrderStatus.AWAITING_CONFIRMATION,
+    ):
         raise ValueError(
             f"Order is {order.status.value}; cannot compose proposal"
         )
+    # Self-heal: promote the order to READY_FOR_COMPOSE if it's
+    # still in a legacy pre-state. The marketplace redesign's
+    # fan-out / supplier-response chain normally does this
+    # (see supplier_submit_quote and prepare_rfq), but legacy
+    # RFQs and sim-injected quotes can leave the order stuck
+    # in rfq_in_progress with all suppliers already responded.
+    if order.status in (
+        OrderStatus.RFQ_IN_PROGRESS,
+        OrderStatus.BIDDING,
+        OrderStatus.AWAITING_CONFIRMATION,
+    ):
+        order.status = OrderStatus.READY_FOR_COMPOSE
+    # Same self-heal for the RFQ: if all invited suppliers have
+    # responded but the RFQ is still OPEN (e.g. quotes were
+    # inserted by the simulator without going through the
+    # submit_quote service), flip it to CLOSED so the company
+    # can proceed. responded_count >= invited_count is the same
+    # condition submit_quote uses.
+    if (
+        rfq.status == RFQStatus.OPEN
+        and rfq.responded_count >= rfq.invited_count
+    ):
+        rfq.status = RFQStatus.CLOSED
 
     # Wipe any prior decisions (re-composing). Cascade-deletes
     # SupplierLineAssignment rows via FK.

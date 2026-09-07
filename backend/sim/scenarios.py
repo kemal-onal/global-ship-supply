@@ -149,11 +149,11 @@ def _build_default_med() -> Scenario:
         tags=("mediterranean", "default", "short-sea"),
         assignments=tuple(
             [
-                _bind("901000001", ["GRPIR", "ITGOA", "MTMLA", "ESALG"]),  # NORTHERN STAR
-                _bind("901000003", ["ITGOA", "MTMLA", "GRPIR", "ESALG"]),  # EASTERN PROMISE
-                _bind("901000004", ["ESALG", "ITGOA", "GRPIR"]),          # CARGO PIONEER
-                _bind("903000002", ["MTMLA", "ITGOA", "GRPIR"]),          # PRODUCT EXPRESS
-                _bind("904000001", ["ESALG", "GRPIR", "MTMLA"]),          # GENERAL TRADER
+                _bind("900000001", ["GRPIR", "ITGOA", "MTMLA", "ESALG"]),  # MV Marmara (container)
+                _bind("900000003", ["ITGOA", "MTMLA", "GRPIR", "ESALG"]),  # MV Bosphorus (tanker)
+                _bind("900000004", ["ESALG", "ITGOA", "GRPIR"]),          # MV Antalya (container)
+                _bind("900000002", ["MTMLA", "ITGOA", "GRPIR"]),          # MV Aegean (bulk)
+                _bind("900000006", ["ESALG", "GRPIR", "MTMLA"]),          # MV North Star (bulk)
             ]
         ),
         port_dwell_minutes=240,
@@ -184,25 +184,25 @@ def _build_suez_blockage() -> Scenario:
             [
                 # Cape-route vessels (Asia -> Durban -> Europe)
                 _bind(
-                    "901000002",
+                    "900000005",
                     ["SGSIN", "HKHKG", "OMSLL", "ZADUR", "NLRTM"],
-                ),  # PACIFIC HORIZON
+                ),  # MV Pacific Voyager (container)
                 _bind(
-                    "901000005",
+                    "900000009",
                     ["CNSHA", "SGSIN", "OMSLL", "ZADUR", "NLRTM"],
-                ),  # ATLANTIC DAWN
+                ),  # MV Singapore Pearl (container)
                 _bind(
-                    "902000001",
+                    "900000010",
                     ["SGSIN", "HKHKG", "INNSA", "ZADUR", "NLRTM"],
-                ),  # IRON BULKER
+                ),  # MV Dubai Star (LNG)
                 _bind(
-                    "902000002",
+                    "900000011",
                     ["INMUN", "OMSLL", "ZADUR", "NLRTM"],
-                ),  # GRAIN VENTURE
+                ),  # MV Hamburg (container)
                 # Idle Mediterranean vessels (2-port loops; the
                 # huge global dwell keeps them effectively moored).
-                _bind("903000001", ["MTMLA", "GRPIR"]),  # CRUDE VOYAGER
-                _bind("901000003", ["ESALG", "ITGOA"]),  # EASTERN PROMISE
+                _bind("900000003", ["MTMLA", "GRPIR"]),  # MV Bosphorus (tanker)
+                _bind("900000004", ["ESALG", "ITGOA"]),  # MV Antalya (container)
             ]
         ),
     )
@@ -222,11 +222,11 @@ def _build_storm_rerouting() -> Scenario:
         start_at=_DEFAULT_START_AT,
         assignments=tuple(
             [
-                _bind("901000005", ["USNYC", "MAPTM", "NLRTM"]),  # ATLANTIC DAWN
-                _bind("901000004", ["USNYC", "MAPTM", "ESALG"]),  # CARGO PIONEER
-                _bind("903000001", ["NGLOS", "MAPTM", "USNYC"]),  # CRUDE VOYAGER
-                _bind("904000003", ["USNYC", "MAPTM", "NLRTM"]),  # DRIVE TRADER
-                _bind("902000004", ["USNYC", "MAPTM", "ESALG"]),  # ORE MASTER
+                _bind("900000005", ["USNYC", "MAPTM", "NLRTM"]),  # MV Pacific Voyager (container)
+                _bind("900000008", ["USNYC", "MAPTM", "ESALG"]),  # MV Rotterdam Express (container)
+                _bind("900000010", ["NGLOS", "MAPTM", "USNYC"]),  # MV Dubai Star (LNG)
+                _bind("900000012", ["USNYC", "MAPTM", "NLRTM"]),  # MV Yokohama (reefer)
+                _bind("900000007", ["USNYC", "MAPTM", "ESALG"]),  # MV Istanbul (general cargo)
             ]
         ),
     )
@@ -246,8 +246,8 @@ def _build_quiet_harbor() -> Scenario:
         start_at=_DEFAULT_START_AT,
         assignments=tuple(
             [
-                _bind("904000001", ["NLRTM", "DEHAM"]),  # GENERAL TRADER
-                _bind("904000002", ["NLRTM", "DEHAM"]),  # REEF STAR
+                _bind("900000008", ["NLRTM", "DEHAM"]),  # MV Rotterdam Express (container)
+                _bind("900000011", ["NLRTM", "DEHAM"]),  # MV Hamburg (container)
             ]
         ),
     )

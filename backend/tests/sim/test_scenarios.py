@@ -179,6 +179,30 @@ class TestScenarioContent:
         assert s.port_dwell_minutes is not None
         assert s.port_dwell_minutes > 1_000_000
 
+    def test_sim_vessel_mmsis_match_seed_fleet(self) -> None:
+        # The AIS feed is joined to seed vessels on MMSI by the ETA
+        # snapshot service. A scenario that references a MMSI not
+        # present in the seed (or vice versa) silently breaks ETA
+        # snapshots for any order assigned to that vessel — the
+        # marketplace UI shows the "no AIS ETA snapshot" warning
+        # with no other indication of why. This test pins the
+        # alignment: every scenario's vessel MMSI must be a known
+        # sim vessel, and the full set of sim vessel MMSIs is the
+        # same 12 MMSIs the seed scripts/seed.py seeds.
+        from sim.vessels import VESSELS
+        seed_mmsis = {v.mmsi for v in VESSELS}
+        assert len(seed_mmsis) == 12, (
+            f"expected 12 sim vessels (one per seed row), got "
+            f"{len(seed_mmsis)}"
+        )
+        for s in SCENARIOS.values():
+            for vessel, _ports in s.assignments:
+                assert vessel.mmsi in seed_mmsis, (
+                    f"Scenario {s.name!r} references unknown MMSI "
+                    f"{vessel.mmsi!r}; known MMSIs: "
+                    f"{sorted(seed_mmsis)}"
+                )
+
 
 # --- world integration smoke tests --------------------------------
 

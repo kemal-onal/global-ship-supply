@@ -15,7 +15,7 @@
 ![Cache: Redis 7](https://img.shields.io/badge/cache-Redis%207-dc382d)
 ![PWA: Service Worker](https://img.shields.io/badge/PWA-Service%20Worker-5a0fc8)
 ![Map: Leaflet 1.9](https://img.shields.io/badge/map-Leaflet%201.9-199900)
-![Tests: 402 passing](https://img.shields.io/badge/tests-402%20passing-brightgreen)
+![Tests: 427 passing](https://img.shields.io/badge/tests-427%20passing-brightgreen)
 
 ## Highlights
 
@@ -61,13 +61,18 @@
 - **Synthetic AIS traffic** — standalone `sim/` package decoupled
   from FastAPI/SQLAlchemy, with 4 built-in scenarios (Mediterranean
   shuttle, Suez blockage, North-Atlantic storm rerouting, quiet
-  harbor). Same feed your production data pipeline would consume.
-- **402 passing tests** — pytest with `asyncio_mode = "auto"`;
+  harbor). Vessels trace the great-circle waypoint polyline
+  (not a straight line) and report wall-clock `event_ts`; the
+  runner also exposes a `VISUAL_SPEED_BOOST=10` multiplier so
+  you can see cross-ocean motion in minutes. Same feed your
+  production data pipeline would consume.
+- **427 passing tests** — pytest with `asyncio_mode = "auto"`;
   the marketplace redesign (proposal composer, supplier gate,
   preparation sweeper), IMPA-first catalog reader, clarification
-  thread, RBAC permissions, and the original sealed-bid /
-  counter-offer classification each have their own test files.
-  The full suite runs in ~12 s.
+  thread, RBAC permissions, the AIS sim (waypoint following,
+  MMSI realignment, scenario integration), and the 3 marketplace
+  bugfix regressions from 2026-09-07 each have their own test
+  files. The full suite runs in ~13 s.
 
 ## Quick links
 
@@ -130,7 +135,7 @@ rows. Production needs:
 | **Customs & port regulation** filter              | JSONLogic-lite condition evaluator over (order, country) → severity, blocking flag, permit requirement |
 | **Per-user notifications**                        | Server-side inbox + 30s polling badge, in-app bell panel, mark-read/mark-all-read                     |
 | **Modern UI** designed in Figma                   | Component-based, dark mode, TanStack-Virtual data grids, design tokens mirrored from Figma             |
-| **Live synthetic AIS traffic** on a map           | Standalone `sim/` package, 4 scenarios, polled at 5s by a Leaflet map page                             |
+| **Live synthetic AIS traffic** on a map           | Standalone `sim/` package, 4 scenarios, polled at 5s by a Leaflet map page. Vessels follow the great-circle waypoint polyline (not a straight line) and report wall-clock `event_ts` |
 
 See `docs/architecture/` for the deep dives on each.
 
@@ -183,7 +188,7 @@ mock-up/
 │   │   ├── types.py                  #   Port, Vessel, Route, PositionReport, SimEvent
 │   │   ├── geo.py                    #   Haversine, slerp, initial-bearing math (pure)
 │   │   ├── ports.py                  #   54 hand-picked maritime hubs
-│   │   ├── vessels.py                #   15 fictional vessels (MID 9xx MMSIs)
+│   │   ├── vessels.py                #   12 fictional vessels (MID 9xx MMSIs, mirrors seed fleet)
 │   │   ├── routes.py                 #   Great-circle route generation
 │   │   ├── world.py                  #   Tick loop, ship movement, port events
 │   │   ├── events.py                 #   EventBatch (JSON adapter for /internal/ais/ingest)
@@ -194,11 +199,11 @@ mock-up/
 │   │   └── __main__.py               #   `python -m sim` shim
 │   ├── scripts/seed.py               # Idempotent demo seeder (5 users, suppliers, ports…)
 │   ├── tests/
-│   │   ├── api/internal/test_ais_ingest.py   #   4 tests — synthetic AIS ingest
-│   │   ├── api/                              # 96 tests — RBAC, RFQ, IMPA catalog, redaction, marketplace bugfixes
-│   │   ├── marketplace/                      # 64 tests — proposal composer, supplier gate, clarification thread, ETA snapshot
-│   │   ├── market_sim/                       # 39 tests — dry-run bid war, counter-offer visibility
-│   │   └── sim/                              # 199 tests across 9 files — port/vessel/geo math
+│   │   ├── api/internal/test_ais_ingest.py   #   10 tests — synthetic AIS ingest
+│   │   ├── api/                              # 103 tests — RBAC, RFQ, IMPA catalog, redaction, marketplace bugfixes
+│   │   ├── marketplace/                      # 101 tests — proposal composer, supplier gate, clarification thread, ETA snapshot, rfqs-for-compose
+│   │   ├── market_sim/                       # 30 tests — dry-run bid war, counter-offer visibility (legacy)
+│   │   └── sim/                              # 193 tests across 9 files — port/vessel/geo math, waypoint following, scenarios
 │   ├── pyproject.toml                # Project + ruff + mypy + pytest config
 │   ├── alembic.ini
 │   ├── Dockerfile                    # Reused by `backend` and `sim` services
@@ -758,14 +763,51 @@ data, grouped by vessel, with current positions and routes.
 | `sim.types`         | Frozen dataclasses: `Port`, `Vessel`, `Route`, `PositionReport`, `SimEvent` |
 | `sim.geo`           | Haversine, slerp, initial-bearing math (pure functions, no I/O)             |
 | `sim.ports`         | 54 hand-picked maritime hubs (UN/LOCODE-keyed)                              |
-| `sim.vessels`       | 15 fictional vessels (MID 9xx MMSIs)                                       |
+| `sim.vessels`       | 12 fictional vessels (MID 9xx MMSIs, mirroring the seed fleet)             |
 | `sim.routes`        | `build_route`, `build_circular_route` — great-circle math                   |
-| `sim.world`         | Tick loop. `World.step()` yields `(PositionReport, [SimEvent])` per vessel  |
+| `sim.world`         | Tick loop. `World.step()` yields `(PositionReport, [SimEvent])` per vessel; vessels follow the great-circle waypoint polyline, not a straight line |
 | `sim.events`        | `EventBatch` — JSON adapter that produces the `IngestBatchIn` shape         |
 | `sim.backend_client`| Async HTTP client (httpx) with retry policy + health check                 |
 | `sim.config`        | `SimSettings` (pydantic-settings, `SIM_` env prefix)                        |
 | `sim.scenarios`     | Frozen `Scenario` registry with `get_scenario(name)` lookup                 |
 | `sim.runner`        | CLI entry point; drives the world, batches events, flushes to backend       |
+
+### Great-circle waypoint following
+
+Vessels don't move in a straight line from origin to destination — that
+would have them cut through land on long ocean legs. The route data
+already contains a great-circle polyline (60-nm waypoint spacing in
+`sim/routes.py`); the tick loop in `sim/world.py` steers each vessel
+toward the *next unvisited waypoint*, advancing when the waypoint is
+either within 0.5 nm of the vessel or more than 90° off the bearing
+to the destination. The advance runs both before and after the move
+so a single tick that sails past several waypoints catches up
+correctly. The result is a polyline that traces the great-circle arc
+(through the East China Sea, around the Horn, etc.) rather than a
+straight-line shortcut through land.
+
+`tests/sim/test_world.py::test_path_follows_waypoints_not_straight_line`
+pins this — it runs SG → SH and asserts every position stays within
+50 nm of the great-circle interpolation between the two ports.
+
+### Decoupled sim-time and wall-clock timestamps
+
+`PositionReport.event_ts` is wall-clock UTC (`datetime.utcnow()` at tick
+time), not sim-time. The two clocks are intentionally decoupled so the
+backend can read "when did the vessel *actually* report" without
+muddling it with "how much sim time has elapsed". A
+`(event_ts - wall_clock) <= 5s` invariant is enforced in
+`tests/sim/test_world.py::test_report_ts_is_wall_clock_within_5_seconds`.
+
+### Speeding up the visual
+
+`VISUAL_SPEED_BOOST` is a module-level constant in `sim/world.py`
+(currently set to `10.0`). It multiplies per-tick distance, not SOG,
+so reported COG and SOG stay realistic while the vessel covers ground
+faster. The effect: a 3,000-nm leg that would normally take an hour
+to play out in real-time becomes 5–10 minutes. This is what you want
+when demoing to a stakeholder. Combine it with
+`SIM_SIM_TIME_SCALE=60` for the smoothest visible motion.
 
 The simulator's design and the rationale behind the
 `source` column / no-FK isolation are documented in
@@ -1243,29 +1285,50 @@ event types that *do* have lat/lon. Check the browser devtools
 network tab — the URL should end with
 `?scenario=…&event_type=position_report&limit=1000`.
 
+If the page shows the "No position data yet" empty state but the
+sim is running, check the scenario dropdown — it must match the
+scenario the sim was started with (default is `default_med`). The
+empty-state message names the selected scenario, so it should
+self-diagnose.
+
+### Vessel polylines cut through land on the Fleet Map
+
+Pre-fix, the sim steered each vessel directly at the *destination*
+on every tick, producing a piecewise-rhumb-line that crosses land
+on long ocean legs (Trieste → Malta via the Italian peninsula, for
+example). The current implementation in `sim/world.py::_handle_underway`
+steers toward the *next unvisited waypoint* along the great-circle
+polyline, advancing the waypoint index when the vessel crosses it
+(distance < 0.5 nm, OR bearing to waypoint more than 90° off
+bearing to destination). The result is a polyline that follows
+the great-circle arc — through the East China Sea, around the
+Italian boot, etc. — not a straight-line shortcut.
+
 ---
 
 ## Testing
 
 ### Backend (pytest)
 
-The backend ships **402 tests** covering the synthetic AIS sim, the
-sealed-bid counter-offer classification, the RBAC permission
-matrix, the IMPA-first catalog reader, the marketplace redesign
-(proposal composer, supplier gate, preparation sweeper), the
-clarification thread, and the three bugfixes pinned in
-`test_marketplace_bugfixes.py`.
+The backend ships **427 tests** covering the synthetic AIS sim
+(including the great-circle waypoint-following and wall-clock
+timestamp regressions), the sealed-bid counter-offer
+classification, the RBAC permission matrix, the IMPA-first
+catalog reader, the marketplace redesign (proposal composer,
+supplier gate, preparation sweeper, ETA snapshot), the
+clarification thread, and the 3 marketplace-flow bugfixes
+pinned in `test_marketplace_bugfixes.py`.
 
 | Test file                                            | Count | Area                                                  |
 | ---------------------------------------------------- | ----- | ----------------------------------------------------- |
 | `tests/sim/test_types.py`                            | 12    | Frozen dataclasses (Port, Vessel, PositionReport…)    |
-| `tests/sim/test_ports_and_vessels.py`                | 13    | Static fixtures (54 ports, 15 vessels)                |
+| `tests/sim/test_ports_and_vessels.py`                | 13    | Static fixtures (54 ports, 12 vessels, MID 9xx MMSIs) |
 | `tests/sim/test_geo.py`                              | 31    | Pure math (Haversine, slerp, bearing)                 |
 | `tests/sim/test_routes.py`                           | 13    | `build_route`, `build_circular_route`                 |
-| `tests/sim/test_world.py`                            | 14    | `World.step()` tick loop, port events                 |
+| `tests/sim/test_world.py`                            | 16    | `World.step()` tick loop, waypoint following, wall-clock `event_ts` |
 | `tests/sim/test_events.py`                           | 14    | `EventBatch` JSON adapter (pydantic contract)         |
 | `tests/sim/test_backend_client.py`                   | 3     | httpx client, retry policy, injected vs owned client  |
-| `tests/sim/test_scenarios.py`                        | 37    | 4 built-in scenarios + registry + world integration   |
+| `tests/sim/test_scenarios.py`                        | 38    | 4 built-in scenarios + registry + world integration   |
 | `tests/sim/test_runner.py`                           | 20    | CLI: `parse_args`, `build_runtime`, `run_loop`, `main`|
 | `tests/api/internal/test_ais_ingest.py`              | 10    | `/api/v1/internal/ais/ingest` end-to-end              |
 | `tests/api/test_rbac.py`                             | 27    | Role × permission matrix; row-level vessel scoping   |
@@ -1275,28 +1338,31 @@ clarification thread, and the three bugfixes pinned in
 | `tests/api/test_redaction.py`                        | 24    | Vessel label redaction (CRC32 → "Vessel #N")          |
 | `tests/api/test_marketplace_bugfixes.py`            | 5     | 3 marketplace-flow bugfix regressions (Sept 2026)     |
 | `tests/market_sim/test_market_sim.py`                | 7     | Legacy sealed-bid engine (kept for backward compat)   |
+| `tests/market_sim/test_engine.py`                    | 17    | Market-sim engine internals (kept for backward compat)|
+| `tests/market_sim/test_agent.py`                     | 13    | Market-sim bidding-agent heuristics                   |
 | `tests/marketplace/test_clarification.py`            | 14    | Admin↔purchaser clarification thread                  |
 | `tests/marketplace/test_compose_proposal.py`         | 3     | Per-line proposal composer                            |
-| `tests/marketplace/test_eta_snapshot.py`              | (TestClass) | ETA/ETD snapshot from the latest AIS report    |
+| `tests/marketplace/test_eta_snapshot.py`             | 1     | ETA/ETD snapshot from the latest AIS report           |
 | `tests/marketplace/test_preparation_timeout.py`      | (TestClass) | 24h preparation sweeper drops slow suppliers    |
 | `tests/marketplace/test_purchaser_approval.py`       | 6     | Purchaser approval flow                               |
+| `tests/marketplace/test_rfqs_for_compose.py`         | 13    | `/marketplace/orders/{id}/rfqs-for-compose` candidate filter |
 | `tests/marketplace/test_sealed_identities.py`        | 8     | Supplier identity stays sealed until approval         |
 | `tests/marketplace/test_supplier_gate.py`            | (TestClass) | IMPA-first "can deliver in window" gate            |
-| `tests/marketplace/test_supplier_portal.py`          | 11    | Supplier portal: list / detail / accept / assignments |
-| **Total**                                            | **402** | Full suite runs in **~12 seconds**                 |
+| `tests/marketplace/test_supplier_portal.py`          | 16    | Supplier portal: list / detail / accept / assignments / lazy-load / awarded-form hides |
+| **Total**                                            | **427** | Full suite runs in **~13 seconds**                 |
 
-(The `402` number comes from `pytest --collect-only`; the lower
+(The `427` number comes from `pytest --collect-only`; the lower
 `def test_…` count you see from `grep` is because many tests live
 inside `class Test…` blocks. Some `async def` test methods are
 shown as `(TestClass)` in the table because pytest renders them
 as `<Coroutine>` in `--collect-only` and a strict function count
-skips them — the totals still sum to 402.)
+skips them — the totals still sum to 427.)
 
 **macOS / Linux**
 ```bash
 cd backend
 source .venv/bin/activate
-pytest                       # run all 402 tests
+pytest                       # run all 427 tests
 pytest -k search            # only tests whose name matches "search"
 pytest --cov=app             # with coverage report
 pytest -k "ingest or sim"    # run two slices at once
@@ -1306,7 +1372,7 @@ pytest -k "ingest or sim"    # run two slices at once
 ```powershell
 cd backend
 .venv\Scripts\Activate.ps1
-pytest                       # run all 402 tests
+pytest                       # run all 427 tests
 pytest -k search            # only tests whose name matches "search"
 pytest --cov=app             # with coverage report
 ```

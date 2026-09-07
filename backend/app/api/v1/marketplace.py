@@ -2,6 +2,7 @@
 snapshots the ETA.
 
 Routes:
+  GET   /api/v1/rfqs-for-compose                    [admin]
   POST  /api/v1/rfq/{rfq_id}/compose            [admin]
   POST  /api/v1/orders/{order_id}/approve-proposal   [purchaser]
   POST  /api/v1/orders/{order_id}/drop-supplier      [admin]
@@ -86,7 +87,17 @@ async def _load_rfq_or_404(db, rfq_id: UUID, token) -> RFQ:
 
 
 async def _load_order_or_404(db, order_id: UUID, token) -> Order:
-    o = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    # ``snapshot_eta_for_order`` reads ``order.port`` (the Port
+    # relationship) — without the ``selectinload`` here that's a
+    # lazy-load in async context, which triggers a
+    # ``MissingGreenlet`` at runtime. The order is small, so the
+    # eager load is cheap; the alternative is to thread the port
+    # unlocode through every caller.
+    o = (await db.execute(
+        select(Order)
+        .options(selectinload(Order.port), selectinload(Order.vessel))
+        .where(Order.id == order_id)
+    )).scalar_one_or_none()
     if not o:
         raise HTTPException(status_code=404, detail="Order not found")
     await assert_vessel_access(token, o.vessel_id)
@@ -94,6 +105,96 @@ async def _load_order_or_404(db, order_id: UUID, token) -> Order:
 
 
 # ── Routes ─────────────────────────────────────────────────────────
+
+
+# Order statuses for which the admin can compose a proposal. This
+# matches the self-heal allowlist in
+# ``marketplace_svc.compose_proposal``: ready_for_compose is the
+# marketplace redesign's normal path; the legacy sealed-bid
+# predecessors (rfq_in_progress / bidding / awaiting_confirmation)
+# are included because compose_proposal self-heals them to
+# ready_for_compose before writing the new status. Exposing them
+# here means the picker surfaces legacy orders that the admin can
+# unblock by clicking compose.
+_COMPOSE_ELIGIBLE_ORDER_STATUSES: tuple[OrderStatus, ...] = (
+    OrderStatus.READY_FOR_COMPOSE,
+    OrderStatus.RFQ_IN_PROGRESS,
+    OrderStatus.BIDDING,
+    OrderStatus.AWAITING_CONFIRMATION,
+)
+
+
+@router.get("/rfqs-for-compose")
+async def list_rfqs_for_compose(
+    db: ReadDBSession,
+    token: Annotated[CurrentToken, Depends(require_permission("marketplace", "compose", "global"))],
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List the RFQs whose orders are eligible for proposal composition.
+
+    The marketplace admin's left-rail picker calls this. We filter
+    by **order status**, not RFQ status — the picker wants RFQs
+    whose order is ready for the per-line decision step, which
+    corresponds to the order states ``ready_for_compose`` plus the
+    legacy sealed-bid predecessors (which the compose service
+    self-heals).
+
+    Why not filter by ``RFQ.status == OPEN``? Because once every
+    invited supplier has responded, ``supplier_submit_quote`` flips
+    the RFQ to ``closed`` and the order to ``ready_for_compose`` —
+    the two are the same fact seen from different sides. Querying
+    by order status is the stable, semantically correct view, and
+    it gracefully includes the legacy sealed-bid RFQs whose
+    status stayed ``open`` because their quotes were injected by
+    the simulator rather than going through the submit service.
+
+    The response shape matches what the picker renders: id,
+    reference, order_id, order_reference, port_id, status, the
+    response counters, and the line items.
+    """
+    stmt = (
+        select(RFQ)
+        .join(Order, Order.id == RFQ.order_id)
+        .options(selectinload(RFQ.order), selectinload(RFQ.items))
+        .where(Order.status.in_(_COMPOSE_ELIGIBLE_ORDER_STATUSES))
+        .order_by(RFQ.created_at.desc())
+    )
+    if not token.has_any_role(["super_admin", "fleet_admin"]):
+        # Vessel-scoped view: only RFQs whose order.vessel_id
+        # matches the caller's vessel_id. External users with no
+        # vessel get an empty list.
+        if token.vessel_id is not None:
+            stmt = stmt.where(Order.vessel_id == token.vessel_id)
+        else:
+            stmt = stmt.where(False)
+    stmt = stmt.limit(limit).offset(offset)
+    rows = (await db.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": str(r.id),
+            "reference": r.reference,
+            "order_id": str(r.order_id),
+            "order_reference": r.order.reference if r.order else None,
+            "port_id": str(r.port_id),
+            "status": r.status.value,
+            "sent_at": r.sent_at.isoformat() if r.sent_at else None,
+            "response_deadline": r.response_deadline.isoformat(),
+            "closed_at": r.closed_at.isoformat() if r.closed_at else None,
+            "awarded_at": r.awarded_at.isoformat() if r.awarded_at else None,
+            "invited_count": r.invited_count,
+            "responded_count": r.responded_count,
+            "items": [
+                {
+                    "product_id": str(i.product_id),
+                    "quantity": i.quantity,
+                    "unit": i.unit,
+                }
+                for i in r.items
+            ],
+        }
+        for r in rows
+    ]
 
 
 @router.post("/rfq/{rfq_id}/compose")

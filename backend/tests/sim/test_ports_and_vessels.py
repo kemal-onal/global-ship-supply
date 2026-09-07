@@ -41,8 +41,13 @@ class TestPortsCatalog:
 
 
 class TestVesselsCatalog:
-    def test_at_least_15_vessels(self) -> None:
-        assert len(VESSELS) >= 15
+    def test_at_least_12_vessels(self) -> None:
+        # The catalog mirrors the seed fleet (12 vessels). Older
+        # versions had a separate 14-vessel "MV NORTHERN STAR" fleet
+        # but that decoupled the AIS feed from the seed vessels and
+        # broke ETA snapshot joins. The catalog now must match
+        # ``scripts/seed.py`` row-for-row.
+        assert len(VESSELS) >= 12
 
     def test_unique_mmsis(self) -> None:
         mmsis = [v.mmsi for v in VESSELS]

@@ -245,6 +245,116 @@ class TestComposeServiceMath:
         with pytest.raises(ValueError, match="Invalid decision"):
             await compose_proposal(db, rfq, decisions=decisions, margin_pct=8.0, composed_by=uuid4())
 
+    @pytest.mark.asyncio
+    async def test_self_heals_legacy_rfq_in_progress_order(self) -> None:
+        """Pinning test for the legacy-order-state self-heal.
+
+        Bug: an order started via the legacy sealed-bid flow
+        (``build_rfq_for_order`` in app/services/rfq.py) lives in
+        ``rfq_in_progress`` until the admin runs the proposal
+        composer. The marketplace redesign's compose_proposal
+        used to require ``QUOTING`` / ``READY_FOR_COMPOSE`` only,
+        so the admin saw ``Order is rfq_in_progress; cannot
+        compose proposal`` and was stuck.
+
+        Fix: compose_proposal accepts the legacy sealed-bid
+        predecessor states (rfq_in_progress / bidding /
+        awaiting_confirmation) and auto-promotes the order to
+        ``ready_for_compose`` before doing the compose. Same
+        for the RFQ: if all invited suppliers have responded
+        but the RFQ is still ``OPEN`` (e.g. quotes were injected
+        by the simulator without going through the submit_quote
+        service), flip it to ``CLOSED``.
+        """
+        order = _make_order(status=OrderStatus.RFQ_IN_PROGRESS)
+        rfq = _make_rfq()
+        # All invited suppliers responded but the RFQ is still OPEN
+        # (the sim injected quotes directly, bypassing submit_quote).
+        rfq.status = RFQStatus.OPEN
+        rfq.responded_count = rfq.invited_count = 2
+        rfq.extra = {"invited_supplier_ids": [str(SUPPLIER_ID)]}
+        db = _FakeSession(
+            _FakeResult(scalar=order),  # _load_order
+            _FakeResult(rows=[]),       # wipe existing decisions
+            _FakeResult(scalar=_make_quote_item(unit_price=10.0, quoted_quantity=10)),
+        )
+        decisions = [
+            {
+                "rfq_item_id": str(rfq.items[0].id),
+                "supplier_id": str(SUPPLIER_ID),
+                "quote_id": str(QUOTE_ID),
+                "decision": "use_full",
+            }
+        ]
+        rows = await compose_proposal(
+            db, rfq, decisions=decisions, margin_pct=8.0, composed_by=uuid4()
+        )
+        assert len(rows) == 1
+        # The self-heal flipped the order to ready_for_compose
+        # before the compose wrote the new status; the compose
+        # then moved it to awaiting_purchaser_approval. The
+        # intermediate state is what we want to pin (without
+        # the self-heal, the function would have raised
+        # "Order is rfq_in_progress" first).
+        assert order.status == OrderStatus.AWAITING_PURCHASER_APPROVAL
+        # The RFQ was also self-healed to CLOSED.
+        assert rfq.status == RFQStatus.CLOSED
+
+    @pytest.mark.asyncio
+    async def test_self_heals_bidding_order(self) -> None:
+        """Same self-heal for the ``bidding`` legacy state —
+        another sealed-bid predecessor the marketplace redesign
+        mapped to ``quoting``. The compose must accept it."""
+        order = _make_order(status=OrderStatus.BIDDING)
+        rfq = _make_rfq()
+        rfq.status = RFQStatus.CLOSED  # already closed, no RFQ heal needed
+        db = _FakeSession(
+            _FakeResult(scalar=order),
+            _FakeResult(rows=[]),
+            _FakeResult(scalar=_make_quote_item(unit_price=10.0, quoted_quantity=10)),
+        )
+        decisions = [
+            {
+                "rfq_item_id": str(rfq.items[0].id),
+                "supplier_id": str(SUPPLIER_ID),
+                "quote_id": str(QUOTE_ID),
+                "decision": "use_full",
+            }
+        ]
+        rows = await compose_proposal(
+            db, rfq, decisions=decisions, margin_pct=0.0, composed_by=uuid4()
+        )
+        assert len(rows) == 1
+        assert order.status == OrderStatus.AWAITING_PURCHASER_APPROVAL
+
+    @pytest.mark.asyncio
+    async def test_rejects_unrelated_order_states(self) -> None:
+        """The self-heal only covers the sealed-bid predecessors.
+        Genuinely bad states (DRAFT, PENDING_APPROVAL,
+        AWAITING_PURCHASER_APPROVAL, CONFIRMED, …) still raise
+        so the admin gets a clear error instead of silently
+        composing over a wrong-state order.
+        """
+        order = _make_order(status=OrderStatus.DRAFT)
+        rfq = _make_rfq()
+        rfq.status = RFQStatus.CLOSED
+        db = _FakeSession(
+            _FakeResult(scalar=order),
+            _FakeResult(rows=[]),
+        )
+        decisions = [
+            {
+                "rfq_item_id": str(rfq.items[0].id),
+                "supplier_id": str(SUPPLIER_ID),
+                "quote_id": str(QUOTE_ID),
+                "decision": "use_full",
+            }
+        ]
+        with pytest.raises(ValueError, match="Order is draft; cannot compose"):
+            await compose_proposal(
+                db, rfq, decisions=decisions, margin_pct=8.0, composed_by=uuid4()
+            )
+
 
 # --- route tests ------------------------------------------------------
 

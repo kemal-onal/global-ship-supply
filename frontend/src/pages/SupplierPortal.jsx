@@ -9,6 +9,7 @@ import {
   Clock,
   FileText,
   Inbox,
+  Info,
   Loader2,
   Package,
   Send,
@@ -71,6 +72,23 @@ function hoursUntil(d) {
   const ms = dt.getTime() - Date.now()
   return Math.round(ms / 3_600_000)
 }
+
+// RFQ statuses where the supplier can still decide / submit a
+// quote. Outside this set, the bidding window is closed and the
+// QuoteForm + DeliveryWindowGate must be hidden — submitting
+// would 400 with "RFQ is <status>; cannot accept quotes".
+//
+// Lifecycle:
+//   draft → sent / open   ← supplier can bid
+//   closed                ← everyone responded; waiting on the
+//                            admin to compose. Supplier can't
+//                            change prices anymore.
+//   awarded               ← the company accepted this supplier's
+//                            line(s). Prices are locked; the
+//                            supplier's next job is to accept
+//                            the slice in the Accepted tab.
+//   cancelled / expired   ← dead RFQ. No edits.
+const BIDDING_OPEN_STATUSES = new Set(['sent', 'open'])
 
 // --- list view --------------------------------------------------------
 
@@ -632,9 +650,11 @@ function RfqDetail({ rfqId }) {
       submitSupplierQuote(rfqId, {
         can_deliver_in_window,
         decline_reason,
-        // The form's per-line payload is filled in on the next
-        // submission; the gate posts an empty `lines` array.
-        lead_time_days: 0,
+        // The per-line payload (and lead time) is filled in on
+        // the next submission; the gate click only carries the
+        // yes/no decision. Omit lead_time_days so the backend
+        // schema treats it as None and the service falls back
+        // to the model's default (7 days). Sending 0 would 422.
         lines: [],
       }),
     onSuccess: (res, vars) => {
@@ -701,7 +721,7 @@ function RfqDetail({ rfqId }) {
               </p>
             ) : null}
           </div>
-          {data.has_quote && showForm ? (
+          {data.has_quote && showForm && data.status === 'awarded' ? (
             <button
               onClick={() => accept.mutate()}
               disabled={accept.isPending}
@@ -719,25 +739,92 @@ function RfqDetail({ rfqId }) {
         </div>
       </div>
 
-      {showGate || declined ? (
-        <DeliveryWindowGate
-          rfq={data}
-          quote={data.my_quote}
-          onDecision={(payload) => submitGate.mutate(payload)}
-          deciding={submitGate.isPending}
-        />
-      ) : null}
+      {/* Bidding is only open for SENT / OPEN RFQs. Once the RFQ
+          reaches CLOSED (everyone responded), AWARDED (the company
+          picked suppliers), CANCELLED, or EXPIRED, the gate and
+          the QuoteForm must disappear — the backend refuses
+          writes with "RFQ is <status>; cannot accept quotes", and
+          showing the form was letting the supplier click a button
+          that 400'd. The closed-notice panel below tells them
+          where to go next (Accepted tab for awarded; nothing to
+          do for the others). */}
+      {!BIDDING_OPEN_STATUSES.has(data.status) ? (
+        <RfqClosedNotice rfq={data} quote={data.my_quote} />
+      ) : (
+        <>
+          {showGate || declined ? (
+            <DeliveryWindowGate
+              rfq={data}
+              quote={data.my_quote}
+              onDecision={(payload) => submitGate.mutate(payload)}
+              deciding={submitGate.isPending}
+            />
+          ) : null}
 
-      {showForm ? (
-        <QuoteForm
-          rfq={data}
-          quote={data.my_quote}
-          onSubmitted={() => {
-            qc.invalidateQueries({ queryKey: ['supplier-portal', 'rfqs'] })
-            qc.invalidateQueries({ queryKey: ['supplier-portal', 'rfq', rfqId] })
-          }}
-        />
-      ) : null}
+          {showForm ? (
+            <QuoteForm
+              rfq={data}
+              quote={data.my_quote}
+              onSubmitted={() => {
+                qc.invalidateQueries({ queryKey: ['supplier-portal', 'rfqs'] })
+                qc.invalidateQueries({ queryKey: ['supplier-portal', 'rfq', rfqId] })
+              }}
+            />
+          ) : null}
+        </>
+      )}
+    </div>
+  )
+}
+
+/**
+ * Read-only summary shown when the RFQ is past the bidding
+ * stage. Tells the supplier why the form is gone and — for the
+ * awarded case — points them at the Accepted tab where their
+ * slice lives.
+ */
+function RfqClosedNotice({ rfq, quote }) {
+  const isAwarded = rfq.status === 'awarded'
+  const isCancelled = rfq.status === 'cancelled'
+  const isExpired = rfq.status === 'expired'
+  const isClosed = rfq.status === 'closed'
+
+  const heading = isAwarded
+    ? 'Your quote was accepted'
+    : isCancelled
+      ? 'This RFQ was cancelled'
+      : isExpired
+        ? 'This RFQ has expired'
+        : isClosed
+          ? 'Bidding is closed'
+          : 'Bidding is closed'
+
+  const body = isAwarded
+    ? 'The company has approved the proposal. Your line(s) are now waiting for you to accept in the Accepted tab — you have 24 hours from order confirmation to confirm you are preparing the goods.'
+    : isCancelled
+      ? 'The company cancelled this RFQ before the bidding window closed. There is nothing for you to do.'
+      : isExpired
+        ? 'The response deadline passed without a decision. There is nothing for you to do.'
+        : 'All invited suppliers have responded and the company is composing the proposal. Your line prices are locked in; we will notify you if the company picks you.'
+
+  return (
+    <div className="bg-slate-50 dark:bg-slate-900/50 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <div className="flex items-start gap-3">
+        <Info className="w-5 h-5 text-slate-500 flex-shrink-0 mt-0.5" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold">{heading}</div>
+          <p className="text-xs text-slate-600 dark:text-slate-300 mt-1">
+            {body}
+          </p>
+          {isAwarded && quote ? (
+            <div className="mt-3 text-[11px] text-slate-500">
+              Your quote on file: <span className="font-mono">{quote.reference}</span>
+              {quote.total != null ? <> · total {quote.total} {quote.currency || 'USD'}</> : null}
+              {quote.lead_time_days != null ? <> · lead time {quote.lead_time_days} days</> : null}
+            </div>
+          ) : null}
+        </div>
+      </div>
     </div>
   )
 }

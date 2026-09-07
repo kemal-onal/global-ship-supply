@@ -13,11 +13,11 @@ import {
 } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-import { apiGet } from '../api/client'
 import {
   composeProposal,
   getRfqLattice,
   getOrderProposal,
+  listRfqsForCompose,
 } from '../api/marketplace'
 
 // --- shared helpers ---------------------------------------------------
@@ -49,15 +49,19 @@ function formatEta(iso) {
 // --- RFQ picker (left rail) -------------------------------------------
 
 function RfqPicker({ activeId, onSelect }) {
-  // The marketplace is for RFQs whose invited suppliers have all
-  // responded (i.e. the order is ready to compose). The /rfq endpoint
-  // only accepts RFQStatus values, so we fetch `status=open` and
-  // filter client-side by `responded_count === invited_count`.
-  // (ready_for_compose is an OrderStatus, not an RFQStatus — the
-  // picker used to send it here and got 422.)
+  // The marketplace is for RFQs whose order is ready to compose.
+  // The dedicated /marketplace/rfqs-for-compose endpoint filters
+  // by **order status** (ready_for_compose + the legacy sealed-bid
+  // predecessors that the compose self-heal handles), which is
+  // the right semantic — querying the generic /rfq by status
+  // loses the order-level "is this compose-eligible?" predicate
+  // (an RFQ with status=open might belong to a draft order; an
+  // RFQ with status=closed is the canonical "ready to compose"
+  // state). The endpoint is the source of truth; no client-side
+  // filtering needed.
   const { data, isLoading, error } = useQuery({
-    queryKey: ['rfqs', 'for-compose'],
-    queryFn: () => apiGet('/rfq', { query: { status: 'open', limit: 50 } }),
+    queryKey: ['marketplace', 'rfqs-for-compose'],
+    queryFn: () => listRfqsForCompose(),
   })
 
   if (isLoading) {
@@ -71,12 +75,7 @@ function RfqPicker({ activeId, onSelect }) {
     return <div className="p-4 text-sm text-rose-500">{error.message}</div>
   }
 
-  const ready = (data || []).filter(
-    (r) =>
-      (r.invited_count ?? 0) > 0 &&
-      (r.responded_count ?? 0) === r.invited_count
-  )
-  const rows = ready
+  const rows = data || []
 
   if (rows.length === 0) {
     return (
@@ -84,9 +83,9 @@ function RfqPicker({ activeId, onSelect }) {
         <LayoutGrid className="w-8 h-8 mx-auto text-slate-300 mb-2" />
         <div className="text-sm font-medium text-slate-700">No RFQs to compose</div>
         <p className="text-xs text-slate-500 mt-1">
-          When an RFQ has had all invited suppliers respond (or its
-          deadline passes), it shows up here for the per-line decision
-          step.
+          When an order has had all its invited suppliers respond
+          (or its RFQ deadline passes), it shows up here for the
+          per-line decision step.
         </p>
       </div>
     )

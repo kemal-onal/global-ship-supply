@@ -319,3 +319,37 @@ class TestEtdMissingVessel:
         assert snap.eta is None
         assert len(db.calls) == 1
 
+
+# --- route-level regression: order.port must be eagerly loaded -------
+#
+# The ``POST /orders/{id}/snapshot-eta`` route loads the order via
+# ``_load_order_or_404`` and then passes it to ``snapshot_eta_for_order``
+# which reads ``order.port.unlocode``. If the order is loaded without
+# a ``selectinload(Order.port)``, the relationship is a lazy-load
+# in async context, which raises ``MissingGreenlet`` and the route
+# returns 500. This test pins the fix by inspecting the SQL statement
+# the helper would emit.
+class TestLoadOrderOr404EagerLoadsRelationships:
+    def test_load_order_query_eagerly_loads_port_and_vessel(self) -> None:
+        import inspect
+        from app.api.v1 import marketplace
+
+        # Read the helper's source. If a future refactor drops the
+        # selectinload on ``Order.port`` or ``Order.vessel``, this
+        # test fails with a clear message naming the lazy-load
+        # error (``MissingGreenlet``) it would cause.
+        src = inspect.getsource(marketplace._load_order_or_404)
+        assert "selectinload(Order.port)" in src, (
+            "snapshot_eta_for_order reads order.port — the route's "
+            "_load_order_or_404 helper must eagerly fetch this "
+            "relationship via selectinload, or the access raises "
+            "MissingGreenlet in async context and the endpoint "
+            "returns 500"
+        )
+        assert "selectinload(Order.vessel)" in src, (
+            "snapshot_eta_for_order also reads order.vessel (via "
+            "order.vessel_id) — the route's _load_order_or_404 "
+            "helper must eagerly fetch this relationship too, or "
+            "the access raises MissingGreenlet in async context"
+        )
+

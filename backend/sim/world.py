@@ -11,9 +11,15 @@ Design
 
 * **Tick semantics.** A "tick" advances the simulation by
   ``tick_seconds * sim_time_scale`` *simulated* seconds. Position
-  reports carry the *simulated* timestamp, not the wall-clock time
-  — this is the timestamp the AVS Global backend will store, and it
-  must be monotonic for replay.
+  reports carry the **wall-clock** timestamp on ``ts`` so the
+  backend's freshness window (the "no AIS ETA snapshot" warning,
+  the ETA snapshot's 6h window) is meaningful: sim-time started
+  at 2026-09-01 00:00:00, so sim-time reports would look 6 days
+  stale against a real wall-clock "now". The vessel's *position*
+  and ``eta`` are still computed against the sim clock, so ETA
+  arithmetic and the great-circle path don't change. Replay
+  semantics are preserved by the order of the events; only the
+  per-report ``ts`` flips to wall-clock.
 
 * **Speed & heading noise.** Per tick, each vessel's SOG and COG get a
   small Gaussian-ish perturbation. The perturbation is
@@ -81,6 +87,21 @@ ETA_CHANGE_THRESHOLD_HOURS = 1.0
 
 # Default port dwell time (sim-minutes) before a vessel departs.
 DEFAULT_PORT_DWELL_MINUTES = 240  # 4 hours
+
+# Visual cruise-speed multiplier. The sim runs at sim_time_scale=1
+# (one sim-second per wall-second) so that ETA snapshots are
+# meaningful on the demo timeline. At a realistic 15-knot cruise
+# speed a vessel covers 0.004 nm/sec, which is invisible on the
+# dashboard. Multiplying the cruise speed by VISUAL_SPEED_BOOST
+# (without touching the sim clock) makes the fleet visibly cross
+# oceans in minutes while still producing ETAs that match the
+# vessel's apparent motion. ETA readers get a faster ETA, which
+# is the correct behavior — the vessels are "moving" faster
+# relative to the map, so they arrive faster in sim time too.
+# 10x is a demo-friendly compromise: a trans-Pacific leg (~5000
+# nm at 15 kts → ~14 days real, 0.6 sim-days at 10x → ~14 hours
+# of sim time, ~14 sim-minutes of wall time at scale 1).
+VISUAL_SPEED_BOOST = 10.0
 
 
 @dataclass
@@ -290,66 +311,100 @@ class World:
     ) -> PositionReport:
         sim_seconds = self.config.sim_seconds_per_tick
         planned_speed = self._cruise_speed(state.vessel)
-        distance_nm = planned_speed * sim_seconds / 3600.0
+        # Reported SOG stays realistic (per the AIS spec, merchant
+        # vessels cruise 8–25 knots). The vessel's actual position
+        # delta per tick is multiplied by VISUAL_SPEED_BOOST so the
+        # fleet animates visibly across the dashboard at
+        # sim_time_scale=1 — without touching the SOG value that
+        # downstream ETA-snapshot queries and audit logs see.
+        # The sim clock still advances at the configured scale
+        # (no inflation), so positions remain correct in absolute
+        # terms; the vessel just moves more nm per tick.
+        distance_nm = planned_speed * sim_seconds / 3600.0 * VISUAL_SPEED_BOOST
 
-        # Heading: target the destination port directly. The great-circle
-        # bearing is recomputed each tick, so the vessel naturally curves
-        # along the great circle (which on long ocean legs is nearly
-        # straight). Intermediate waypoints in ``Route`` are still used
-        # for ETA calculation, progress reporting, and the ``eta_change``
-        # event stream — but not for steering, because targeting
-        # intermediate waypoints at high tick distances caused the
-        # vessel to orbit.
+        # Advance through any waypoints the vessel has now passed.
+        # A waypoint is "passed" if the bearing from vessel → waypoint
+        # is more than 90° off the bearing vessel → destination (i.e.,
+        # the waypoint is now *behind* the vessel along the great
+        # circle). This works correctly at any step size — including
+        # steps much larger than the waypoint spacing — whereas a
+        # naive "d_to_wp < threshold" check either misses waypoints
+        # the vessel has clearly sailed past (when the step > spacing)
+        # or anchors the vessel to whatever waypoint happens to be
+        # nearest on the first tick.
+        route = state.route
+        state.waypoint_index = self._advance_through_passed_waypoints(state)
+        # Target the next remaining waypoint, or the destination if
+        # we've already consumed all intermediate waypoints. Steering
+        # toward each waypoint in turn is what makes the path *trace*
+        # the great-circle polyline instead of cutting straight at
+        # the destination (which on a 5000-nm leg crosses whatever
+        # land happens to lie on the rhumb line).
+        if state.waypoint_index < len(route.waypoints):
+            target = route.waypoints[state.waypoint_index]
+        else:
+            target = route.destination
         planned_heading = initial_bearing_deg(
             state.current_lat, state.current_lon,
-            state.route.destination.lat, state.route.destination.lon,
+            target.lat, target.lon,
         )
 
-        # Apply noise & mean-reversion to SOG and COG.
+        # Apply noise & mean-reversion to SOG and COG — these are the
+        # values we *report* in the AIS position report. The vessel's
+        # *actual* movement (below) uses the great-circle bearing to
+        # the next waypoint, not the noisy reported heading. This
+        # decoupling is essential at VISUAL_SPEED_BOOST > 1: a noisy
+        # heading used as the move direction would push the vessel
+        # off the great circle, and at high tick distances a small
+        # heading error becomes a large cross-track error that grows
+        # unboundedly until the vessel orbits the destination.
         speed_error = state.current_speed_knots - planned_speed
         state.current_speed_knots -= MEAN_REVERSION_RATE * speed_error
         state.current_speed_knots += self.rng.gauss(0.0, SPEED_NOISE_STD * planned_speed)
 
-        heading_error = angular_diff_deg(state.current_heading_deg, planned_heading)
+        reported_heading = state.current_heading_deg
+        heading_error = angular_diff_deg(reported_heading, planned_heading)
         state.current_heading_deg = normalize_heading(
-            state.current_heading_deg + MEAN_REVERSION_RATE * heading_error
+            reported_heading + MEAN_REVERSION_RATE * heading_error
             + self.rng.gauss(0.0, HEADING_NOISE_STD)
         )
 
-        # Move forward by SOG * dt (knots * sim-seconds / 3600 → nm).
-        if distance_nm > 0:
+        # Move toward the target waypoint, capped at the remaining
+        # distance. The vessel always makes monotonic progress along
+        # the great-circle polyline; reported COG can still wiggle
+        # within the noise band the dashboard's tests allow.
+        d_to_target = haversine_nm(
+            state.current_lat, state.current_lon,
+            target.lat, target.lon,
+        )
+        move_nm = min(distance_nm, d_to_target)
+        if move_nm > 0:
             new_lat, new_lon = destination_point(
                 state.current_lat, state.current_lon,
-                state.current_heading_deg, distance_nm,
+                planned_heading, move_nm,
             )
             state.current_lat = new_lat
             state.current_lon = new_lon
 
-        # Advance waypoint index for any waypoint now within 1 nm of vessel.
-        while state.next_waypoint is not None:
-            d_to_wp = haversine_nm(
-                state.current_lat, state.current_lon,
-                state.next_waypoint.lat, state.next_waypoint.lon,
-            )
-            if d_to_wp < 1.0:
-                self._advance_waypoint(state, events_out)
-            else:
-                break
+        # A single tick at VISUAL_SPEED_BOOST=10 can sail us past
+        # several waypoints (187 nm per tick vs 60 nm waypoint
+        # spacing on a long leg). Re-run the advance now that we've
+        # moved, so the next tick targets the new next-waypoint
+        # rather than one we just crossed.
+        state.waypoint_index = self._advance_through_passed_waypoints(state)
 
-        # Check arrival at destination.
-        route = state.route
-        d_to_dest = haversine_nm(
+        # Check arrival at destination. With the cap above, the
+        # vessel can land exactly on the port — the threshold is the
+        # floating-point noise floor from great-circle math.
+        d_to_dest_after = haversine_nm(
             state.current_lat, state.current_lon,
             route.destination.lat, route.destination.lon,
         )
-        # If the vessel is closer to the destination than the planned
-        # movement for this tick, it will overshoot. Snap to dock.
-        # (ARRIVAL_THRESHOLD_NM is the fallback for slow sim rates.)
-        if d_to_dest < max(ARRIVAL_THRESHOLD_NM, distance_nm):
+        if d_to_dest_after < ARRIVAL_THRESHOLD_NM:
             self._arrive_at_port(state, now, events_out)
         else:
             # Recompute ETA occasionally (every tick is fine for now).
-            hours_remaining = d_to_dest / max(1.0, state.current_speed_knots)
+            hours_remaining = d_to_dest_after / max(1.0, state.current_speed_knots)
             new_eta = now + timedelta(hours=hours_remaining)
             old_eta = state.eta_destination
             if old_eta is not None and abs((new_eta - old_eta).total_seconds()) > ETA_CHANGE_THRESHOLD_HOURS * 3600:
@@ -370,16 +425,56 @@ class World:
 
     # --- state transitions --------------------------------------------
 
-    def _advance_waypoint(
+    def _advance_through_passed_waypoints(
         self,
         state: VesselState,
-        events_out: list[SimEvent],
-    ) -> None:
-        state.waypoint_index += 1
-        if state.waypoint_index < len(state.route.waypoints):
-            state.next_waypoint = state.route.waypoints[state.waypoint_index]
-        else:
-            state.next_waypoint = None  # we'll arrive next tick or so
+    ) -> int:
+        """Skip past any waypoints the vessel has already crossed.
+
+        A waypoint is "crossed" if either:
+          (a) the bearing from vessel → waypoint is more than 90° off
+              the bearing vessel → destination (the waypoint lies
+              *behind* the vessel on the great circle), or
+          (b) the vessel is within ``ARRIVAL_THRESHOLD_NM`` of the
+              waypoint (it's on the waypoint or just rounding error
+              from it — without this, the bearing from a vessel
+              *exactly at* a waypoint is 0, which is never > 90° off
+              the bearing to destination, so the waypoint would never
+              be marked as passed).
+
+        This works at any step size (including steps much larger than
+        the waypoint spacing), unlike a naive "d_to_wp < threshold"
+        check that either misses waypoints the vessel has clearly
+        sailed past or anchors the vessel to the nearest waypoint
+        even when many lay between origin and the new position.
+
+        Returns the new ``waypoint_index`` (caller should assign).
+        """
+        route = state.route
+        bearing_to_dest = initial_bearing_deg(
+            state.current_lat, state.current_lon,
+            route.destination.lat, route.destination.lon,
+        )
+        idx = state.waypoint_index
+        while idx < len(route.waypoints):
+            wp = route.waypoints[idx]
+            d_to_wp = haversine_nm(
+                state.current_lat, state.current_lon,
+                wp.lat, wp.lon,
+            )
+            if d_to_wp < ARRIVAL_THRESHOLD_NM:
+                # On the waypoint (within rounding). Advance.
+                idx += 1
+                continue
+            bearing_to_wp = initial_bearing_deg(
+                state.current_lat, state.current_lon,
+                wp.lat, wp.lon,
+            )
+            if abs(angular_diff_deg(bearing_to_dest, bearing_to_wp)) > 90.0:
+                idx += 1
+            else:
+                break
+        return idx
 
     def _arrive_at_port(
         self,
@@ -421,9 +516,13 @@ class World:
 
     def _make_report(self, state: VesselState, now: datetime) -> PositionReport:
         v = state.vessel
+        # ``ts`` is wall-clock so the backend's freshness window
+        # works. The sim's ``now`` (the second arg) is sim-time and
+        # still drives position/eta computation; we just don't
+        # surface it as the report timestamp.
         return PositionReport(
             event_type="position_report",
-            ts=now,
+            ts=datetime.now(timezone.utc),
             mmsi=v.mmsi,
             imo=v.imo,
             vessel_name=v.name,
@@ -447,7 +546,10 @@ class World:
     @staticmethod
     def _cruise_speed(v: Vessel) -> float:
         # Most merchant vessels cruise at 80–90% of max speed for fuel
-        # economy. 0.85 is a reasonable default.
+        # economy. 0.85 is a reasonable default. This is the SOG we
+        # *report* in the AIS position report — kept realistic so
+        # the dashboard's per-vessel readouts and the ETA snapshot
+        # queries match what a real ship would emit.
         return v.max_speed_knots * 0.85
 
 

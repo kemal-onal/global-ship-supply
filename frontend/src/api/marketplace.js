@@ -78,6 +78,24 @@ export function listSupplierAssignments() {
 // --- company marketplace -----------------------------------------------
 
 /**
+ * List the RFQs whose orders are eligible for the admin to
+ * compose a proposal on. The marketplace composer's left-rail
+ * picker calls this. The backend filters by **order status**
+ * (ready_for_compose + the legacy sealed-bid predecessors that
+ * the compose self-heal handles) — not by RFQ.status — because
+ * the picker wants the orders the admin can act on, not the
+ * raw RFQ lifecycle.
+ *
+ * Returns an array of RFQ summaries with the same shape the
+ * picker has always rendered: id, reference, order_id,
+ * order_reference, port_id, status, invited_count,
+ * responded_count, items.
+ */
+export function listRfqsForCompose() {
+  return apiGet('/rfqs-for-compose')
+}
+
+/**
  * Get the composed proposal for an order. Purchaser view has
  * supplier identity sealed (no supplier_id, no supplier_name,
  * line_total is null, customer_facing_total is the total *with*

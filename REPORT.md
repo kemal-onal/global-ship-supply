@@ -77,8 +77,11 @@ A full stack, three layers deep, with a real-time data path on top:
   runs in ~5 seconds. Updated to **285 tests** in ~7 s with the
   RBAC + sealed-bid + counter-offer visibility work, then to
   **402 tests** in ~12 s with the marketplace redesign + IMPA-first
-  ordering + clarification thread + the September 2026 bugfix
-  regressions.
+  ordering + clarification thread + the early-September 2026 bugfix
+  regressions, then to **427 tests** in ~13 s with the September
+  2026 AIS sim work (great-circle waypoint following, wall-clock
+  timestamps, MMSI realignment, scenario integration) and the
+  three supplier-portal regressions.
 - **Marketplace redesign** — the sealed-bid auction was replaced with
   a fan-out RFQ, per-line supplier decision, admin-composed
   proposal, and a 24h supplier acceptance window. New routes in
@@ -126,11 +129,27 @@ A full stack, three layers deep, with a real-time data path on top:
   unit-tested in isolation.
 - **54 hand-picked maritime ports** (Singapore, Rotterdam, Suez, …)
   with realistic lat/lon
-- **15 fictional vessels** in the **MID 9xx MMSI range** (unassigned
-  by the ITU) so any value reaching the backend is obviously synthetic
+- **12 fictional vessels** in the **MID 9xx MMSI range** (unassigned
+  by the ITU, mirroring the seed fleet) so any value reaching the
+  backend is obviously synthetic
 - **4 built-in scenarios**: Mediterranean shuttle, Suez blockage
   (Asia↔Europe via the Cape of Good Hope), North-Atlantic storm
   rerouting, quiet-harbor smoke test
+- **Great-circle waypoint following** — vessels steer toward the
+  *next unvisited waypoint* along the great-circle polyline, not
+  a straight line to the destination. On a 5,000-nm leg the
+  straight-line shortcut would cut through the Italian peninsula;
+  the waypoint path goes through the Ionian Sea as it should.
+  See notable design decision #11 below.
+- **Decoupled sim-time and wall-clock timestamps** —
+  `PositionReport.event_ts` is wall-clock UTC, not sim-time, so
+  the backend can read "when did the vessel *actually* report"
+  without muddling it with "how much sim time has elapsed". A
+  5-second freshness invariant is pinned in
+  `tests/sim/test_world.py::test_report_ts_is_wall_clock_within_5_seconds`.
+- **Visual speed boost** — `VISUAL_SPEED_BOOST = 10` in
+  `sim/world.py` multiplies per-tick distance (not reported SOG)
+  so a 3,000-nm leg plays out in 5–10 minutes instead of an hour.
 - **Reproducible runs** via the `--seed` flag — same seed + same
   scenario = same traffic
 - **httpx async client** with retry policy and a health check
@@ -447,6 +466,49 @@ module docstring is the contract — if you change the response
 shape of any of the three endpoints, you must update the
 corresponding assertions in lockstep with the frontend. The
 convention follows `tests/api/test_impa_catalog.py`.
+
+### 11. The AIS sim steers along the great-circle waypoint polyline, not a straight line to the destination
+
+The route data in `sim/routes.py` was always a great-circle
+polyline (60-nm waypoint spacing), but the tick loop in
+`sim/world.py` originally steered the vessel directly at the
+*destination* on every tick, computing a fresh initial bearing
+each step. On a 5,000-nm leg that's a piecewise-rhumb-line —
+the vessel heads straight at the destination, with the
+straight-line track slowly curving as the bearing recomputes.
+The result, visible on the Fleet Map, was that vessels cut
+through land: MV Bosphorus drew a straight red line from
+Trieste down through southern Italy to Sicily, through the
+Italian peninsula. Looks unprofessional for the supervisor
+demo.
+
+The fix: steer toward the next unvisited waypoint, advancing
+the waypoint index when the vessel crosses it. The "crossed"
+check is two-clause — `d_to_wp < 0.5 nm` (the vessel is
+essentially on the waypoint) OR the bearing to the waypoint
+is more than 90° off the bearing to the destination (the
+waypoint is now behind us along the great circle). Both
+checks are needed: the distance check handles "vessel lands
+exactly on waypoint" (where bearing is undefined / 0); the
+bearing check handles "vessel sails past the waypoint" (step
+> waypoint spacing). The advance runs at the start of the
+tick *and* again after the move, so a single tick at
+`VISUAL_SPEED_BOOST=10` that sails past several waypoints
+catches up correctly.
+
+The principle is general: anywhere a system has a routing
+layer (waypoints, plan, schedule) and a steering layer
+(tick, "where do I go next"), the steering layer must
+follow the routing layer's output, not bypass it with a
+"shortcut" to the final destination. The shortcut is
+correct for short steps (waypoint spacing >> step size) but
+breaks when the step grows.
+
+The pin is `tests/sim/test_world.py::test_path_follows_waypoints_not_straight_line`
+— a buggy "head straight at destination" implementation
+would exceed 100 nm of cross-track error on the SG→SH leg
+because the great circle arcs through the East China Sea
+while the straight line cuts through the South China Sea.
 
 ---
 

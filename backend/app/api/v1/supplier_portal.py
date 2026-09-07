@@ -103,19 +103,26 @@ class QuoteLineIn(BaseModel):
 
 
 class QuoteIn(BaseModel):
-    lead_time_days: int = Field(ge=1, le=180)
+    # IMPA-first gate (migration 0007): the supplier decides
+    # "can I deliver the whole package between ETA and ETD"
+    # *before* filling in any line prices. The lead time is
+    # only required once the supplier opens the line picker
+    # (can_deliver_in_window=True and lines are non-empty).
+    # For a pure yes/no gate click we don't have one yet, so
+    # accept None and let the service fall back to the model's
+    # default (7 days). Validation (ge=1, le=180) only kicks
+    # in when a value is provided.
+    lead_time_days: int | None = Field(default=None, ge=1, le=180)
     payment_terms: str | None = None
     notes: str | None = None
     source: str = "portal"
-    # IMPA-first gate (migration 0007). The supplier decides
-    # "can I deliver the whole package between ETA and ETD"
-    # *before* filling in any line prices. None = not yet
-    # decided (the line picker is closed). True = supplier
-    # is in (lines required below). False = supplier declined
-    # (lines ignored; decline_reason recorded).
+    # None = not yet decided (the line picker is closed).
+    # True = supplier is in (lines required below).
+    # False = supplier declined (lines ignored; decline_reason
+    # recorded).
     can_deliver_in_window: bool | None = None
     decline_reason: str | None = None
-    lines: list[QuoteLineIn]
+    lines: list[QuoteLineIn] = []
 
 
 # ── Routes ─────────────────────────────────────────────────────────
@@ -198,7 +205,7 @@ async def get_rfq(
         .options(
             selectinload(RFQ.items),
             selectinload(RFQ.order).selectinload(Order.vessel),
-            selectinload(RFQ.quotes),
+            selectinload(RFQ.quotes).selectinload(SupplierQuote.items),
         )
         .where(RFQ.id == rfq_id)
     )).scalar_one_or_none()
