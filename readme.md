@@ -1502,6 +1502,22 @@ because they share runtime architecture.
 
 ---
 
+## Marketplace manual flow (no Docker)
+
+Updated: 2026-09-14. Browser-only navigation path:
+`/marketplace/send` → `/marketplace/markup/{rfq_id}` → `/marketplace/review/{rfq_id}`.
+
+Key fixes applied today:
+- `marketplace_simple.py`: `GET /marketplace/rfqs/{rfq_id}` returns `RFQDetailOut` with `items` (including `impa_code`) and `quotes`.
+- `rfq.py`: fixed `compare_quotes` (`is_rejected` → `len(quotes)`).
+- `MarketplaceMarkup.jsx`: added `import React` (fixed `React.Fragment` blank screen); `impa_code` shown in comparison table.
+- `SupplierQuoteForm.jsx`: fixed `LineItemRow` key lookup (`rfq_item_id` → `item.id`) so submitted prices calculate correctly.
+- `OrderDetail.jsx`: fixed RFQ card link (`/marketplace/markup/${r.id}`).
+
+Known gotcha: supplier quote `unit_price` must be non-zero for the subtotal/total to calculate; empty price submits `USD 0`.
+
+---
+
 ## License
 
 MIT © 2026 AVS Global. See [`LICENSE`](./LICENSE).

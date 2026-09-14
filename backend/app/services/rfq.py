@@ -21,7 +21,6 @@ from app.core.config import settings
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.supplier import ProductSupplier
 from app.models.supplier import (
-    BidComparison,
     RFQ,
     RFQItem,
     RFQStatus,
@@ -44,7 +43,7 @@ async def build_rfq_for_order(
     response_deadline_hours: int | None = None,
 ) -> RFQ:
     """Create an RFQ, send to all eligible suppliers at the destination port."""
-    if order.status not in (OrderStatus.DRAFT, OrderStatus.PENDING_APPROVAL, OrderStatus.RFQ_IN_PROGRESS):
+    if order.status not in (OrderStatus.DRAFT, OrderStatus.PENDING_APPROVAL, OrderStatus.RFQ_SENT):
         raise ValueError(f"Order is in status {order.status}; cannot start RFQ")
 
     deadline_h = response_deadline_hours or settings.RFQ_RESPONSE_TIMEOUT_HOURS
@@ -92,7 +91,7 @@ async def build_rfq_for_order(
         # In production: hand off to Celery to email / push to API
         "notification_jobs": "queued",
     }
-    order.status = OrderStatus.RFQ_IN_PROGRESS
+    order.status = OrderStatus.RFQ_SENT
 
     return rfq
 
@@ -176,7 +175,7 @@ async def compare_quotes(
         rfq.status = RFQStatus.AWARDED
         rfq.awarded_at = datetime.now(timezone.utc)
         rfq.awarded_quote_id = winner.id
-        rfq.responded_count = len([q for q in quotes if not q.is_rejected])
+        rfq.responded_count = len(quotes)
         winner.order_id = rfq.order_id
 
     if save:

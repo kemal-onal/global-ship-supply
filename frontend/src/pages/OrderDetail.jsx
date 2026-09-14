@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Check, Clock, Gavel, Loader2, MessageCircle, ShieldAlert, ShieldCheck, Truck, X, Send } from 'lucide-react'
+import { ArrowLeft, BookOpen, Check, ChevronDown, Clock, Gavel, Loader2, MessageCircle, ShieldAlert, ShieldCheck, Truck, X, Send } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-import { apiGet, apiPost } from '../api/client'
+import { apiGet, apiPost, apiPatch } from '../api/client'
 import { useAuthStore } from '../store/auth'
 import { useImpaNames } from '../hooks/useImpaNames'
 import {
@@ -19,7 +19,7 @@ import {
   resolveClarification,
   getClarification,
 } from '../api/clarification'
-import { sendOrderToSuppliers } from '../api/orders'
+import { sendOrderToSuppliers, saveOrderItems } from '../api/orders'
 
 const palette = {
   draft: 'bg-slate-100 text-slate-700',
@@ -98,6 +98,7 @@ export default function OrderDetailPage() {
   // Approve / reject the proposal (purchaser)
   const [showRejectForm, setShowRejectForm] = useState(false)
   const [rejectReason, setRejectReason] = useState('')
+
   const decideProposal = useMutation({
     mutationFn: (approve) =>
       approveProposal(id, { approve, reason: approve ? undefined : rejectReason || undefined }),
@@ -194,7 +195,37 @@ export default function OrderDetailPage() {
     onError: (e) => toast.error(e.message),
   })
 
-  const canSendToSuppliers = isAdmin
+  const submitOrder = useMutation({
+  mutationFn: () => apiPost(`/orders/${id}/submit`),
+  onSuccess: () => { toast.success("Submitted for approval"); qc.invalidateQueries({ queryKey: ['order', id] }); },
+  onError: (e) => toast.error(e.message || "Failed"),
+});
+
+  // --- Draft edit mode (purchaser only, DRAFT orders) -----------
+  const [editing, setEditing] = useState(false);
+  const [draftItems, setDraftItems] = useState(null); // null = unchanged from server
+
+  const startEdit = () => {
+    setDraftItems(order.items.map(it => ({ ...it })));
+    setEditing(true);
+  };
+
+  const saveOrder = useMutation({
+    mutationFn: () => saveOrderItems(id, { items: draftItems }),
+    onSuccess: () => {
+      toast.success("Order updated");
+      setEditing(false);
+      setDraftItems(null);
+      qc.invalidateQueries({ queryKey: ['order', id] });
+    },
+    onError: (e) => toast.error(e.message || "Save failed"),
+  });
+
+  const updateDraftItem = (itemId, field, value) => {
+    setDraftItems(prev => prev.map(it => it.id === itemId ? { ...it, [field]: value } : it));
+  };
+
+const canSendToSuppliers = isAdmin
     && (order?.status === 'draft')
     && (clarification?.summary?.unresolved ?? 0) === 0
 
@@ -219,6 +250,9 @@ export default function OrderDetailPage() {
             <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${palette[order.status]}`}>
               {order.status.replace(/_/g, ' ')}
             </span>
+            {order?.status === 'draft' && (
+              <button onClick={() => submitOrder.mutate()} disabled={submitOrder.isPending} className="ml-3 px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50">Submit for approval</button>
+            )}
           </div>
           <p className="text-slate-500 text-sm mt-1">
             {/* Supplier sees "Vessel #N" — the backend redaction
@@ -256,7 +290,26 @@ export default function OrderDetailPage() {
         {/* Items */}
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
-            <h2 className="text-sm font-semibold mb-3">Line items ({order.items.length})</h2>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-sm font-semibold">Line items ({order.items.length})</h2>
+              {order.status === 'draft' && !isSupplier && (
+                editing ? (
+                  <div className="flex gap-2">
+                    <button onClick={() => saveOrder.mutate()} disabled={saveOrder.isPending} className="px-3 py-1 bg-blue-600 text-white text-sm rounded hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
+                      {saveOrder.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <Check className="w-3 h-3" />}
+                      Save
+                    </button>
+                    <button onClick={() => { setEditing(false); setDraftItems(null); }} className="px-3 py-1 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm rounded hover:bg-slate-300 dark:hover:bg-slate-600">
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={startEdit} className="px-3 py-1 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-300 text-sm rounded hover:bg-slate-50 dark:hover:bg-slate-700">
+                    Edit order
+                  </button>
+                )
+              )}
+            </div>
             <div className="overflow-x-auto -mx-2">
               <table className="w-full text-sm">
                 <thead className="text-xs uppercase text-slate-500">
@@ -264,16 +317,17 @@ export default function OrderDetailPage() {
                     <th className="px-2 py-2 text-left">IMPA</th>
                     <th className="px-2 py-2 text-left">Description</th>
                     <th className="px-2 py-2 text-right">Qty</th>
-                    <th className="px-2 py-2 text-left">Notes</th>
+                    {!editing && <th className="px-2 py-2 text-left">Notes</th>}
                   </tr>
                 </thead>
                 <tbody>
-                  {order.items.map(it => (
-                    <tr key={it.id} className="border-t border-slate-100 dark:border-slate-800">
-                      <td className="px-2 py-2.5 font-mono text-xs align-top">
-                        {it.impa_code || <span className="text-slate-400">—</span>}
-                        {it.impa_code && (() => {
-                          const hit = impaNames.get(it.impa_code)
+                  {(editing ? draftItems : order.items).map(it => {
+                    // IMPA code display (with name lookup) — same in both modes
+                    const impaDisplay = (code) => (
+                      <>
+                        {code || <span className="text-slate-400">—</span>}
+                        {code && (() => {
+                          const hit = impaNames.get(code)
                           if (hit && hit.name) {
                             return (
                               <div className="font-sans text-[10px] text-slate-500 dark:text-slate-400 mt-0.5 leading-tight">
@@ -288,16 +342,63 @@ export default function OrderDetailPage() {
                             </div>
                           )
                         })()}
-                      </td>
-                      <td className="px-2 py-2.5 text-sm">
-                        {it.description || <span className="text-slate-400 italic">no description</span>}
-                      </td>
-                      <td className="px-2 py-2.5 text-right">{it.quantity} {it.unit}</td>
-                      <td className="px-2 py-2.5 text-xs text-slate-600 dark:text-slate-300">
-                        {it.notes || <span className="text-slate-400">—</span>}
-                      </td>
-                    </tr>
-                  ))}
+                      </>
+                    )
+                    return (
+                      <tr key={it.id} className="border-t border-slate-100 dark:border-slate-800">
+                        <td className="px-2 py-2.5 font-mono text-xs align-top">
+                          {editing ? (
+                            <input
+                              type="text"
+                              value={it.impa_code || ''}
+                              onChange={e => updateDraftItem(it.id, 'impa_code', e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              placeholder="e.g. 123456-7890"
+                            />
+                          ) : impaDisplay(it.impa_code)}
+                        </td>
+                        <td className="px-2 py-2.5 text-sm">
+                          {editing ? (
+                            <input
+                              type="text"
+                              value={it.notes || ''}
+                              onChange={e => updateDraftItem(it.id, 'notes', e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-1.5 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              placeholder="Description / intended use"
+                            />
+                          ) : (
+                            it.description || <span className="text-slate-400 italic">no description</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2.5 text-right">
+                          {editing ? (
+                            <div className="flex items-center justify-end gap-1">
+                              <input
+                                type="number"
+                                min={1}
+                                value={it.quantity}
+                                onChange={e => updateDraftItem(it.id, 'quantity', parseInt(e.target.value) || 1)}
+                                className="w-16 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-sm text-right focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                              <input
+                                type="text"
+                                value={it.unit}
+                                onChange={e => updateDraftItem(it.id, 'unit', e.target.value)}
+                                className="w-12 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-600 rounded px-1 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500"
+                              />
+                            </div>
+                          ) : (
+                            `${it.quantity} ${it.unit}`
+                          )}
+                        </td>
+                        {!editing && (
+                          <td className="px-2 py-2.5 text-xs text-slate-600 dark:text-slate-300">
+                            {it.notes || <span className="text-slate-400">—</span>}
+                          </td>
+                        )}
+                      </tr>
+                    )
+                  })}
                 </tbody>
               </table>
             </div>
@@ -385,7 +486,7 @@ export default function OrderDetailPage() {
                 {rfqs.map(r => (
                   <Link
                     key={r.id}
-                    to={`/rfq`}
+                    to={`/marketplace/markup/${r.id}`}
                     className="block p-3 border border-slate-200 dark:border-slate-700 rounded-lg hover:border-blue-500"
                   >
                     <div className="flex items-center justify-between">
@@ -1000,6 +1101,39 @@ function PurchaserClarificationView({ thread, onAnswer, answering }) {
           </li>
         ))}
       </ul>
+    </div>
+  )
+
+  // Collapsible IMPA catalog browser — verifies codes for drafted lines
+  const [catOpen, setCatOpen] = useState(false)
+  const [catTerm, setCatTerm] = useState('')
+  const { data: catData } = useQuery({
+    queryKey: ['impa-catalog', catTerm],
+    queryFn: () => apiGet('/catalog/impa', { query: { q: catTerm || undefined, limit: 200 } }),
+    enabled: catOpen,
+    staleTime: 30_000,
+  })
+  const catRows = Array.isArray(catData) ? catData : (catData?.items || [])
+  const draftCodes = useMemo(() => new Set((draftItems || []).map(it => (it.impa_code || '').trim()).filter(Boolean)), [draftItems])
+
+  return (
+    <div className="mt-8 border-t pt-6">
+      <button onClick={() => setCatOpen(o => !o)} className="text-sm font-medium text-blue-600 hover:underline flex items-center gap-1">
+        {catOpen ? 'Hide' : 'Show'} IMPA catalog browser
+        <ChevronDown className={"w-4 h-4 transition-transform " + (catOpen ? "rotate-180" : "")} />
+      </button>
+      {catOpen && (
+        <div className="mt-3 bg-white dark:bg-slate-900 border rounded-lg p-3 shadow-sm">
+          <input value={catTerm} onChange={e => setCatTerm(e.target.value)} placeholder="Search IMPA code or name…" className="w-full px-2 py-1.5 border rounded text-sm mb-2 dark:bg-slate-800" />
+          <div className="max-h-60 overflow-auto text-xs space-y-1">
+            {catRows.map(r => (
+              <div key={r.impa_code || r.code} className={"px-2 py-1 rounded " + (draftCodes.has((r.impa_code || r.code || '').trim()) ? 'bg-green-50 dark:bg-green-900/20' : 'hover:bg-slate-50 dark:hover:bg-slate-800')}>
+                <span className="font-mono font-medium">{r.impa_code || r.code}</span> — {r.name || r.product_name || ''}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }
