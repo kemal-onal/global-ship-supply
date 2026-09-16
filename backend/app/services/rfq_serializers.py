@@ -1,7 +1,7 @@
 """
 Sealed-bid serializer for RFQ comparison + market-sim results.
 
-The data model (SupplierQuote, BidComparison, MarketSimEvent) holds
+The data model (SupplierQuote, MarketSimEvent) holds
 the full truth. This module is the *response-side* filter that
 strips identity, ratings, and per-bidder prices for callers who
 shouldn't see them — e.g. a `purchasing_officer` running the bid

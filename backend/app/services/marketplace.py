@@ -70,14 +70,11 @@ from app.models.notification import NotificationType
 from app.models.order import Order, OrderItem, OrderStatus
 from app.models.product import Product
 from app.models.supplier import (
-    AssignmentStatus,
-    OrderDecision,
     QuoteItem,
     RFQ,
     RFQItem,
     RFQStatus,
     Supplier,
-    SupplierLineAssignment,
     SupplierPort,
     SupplierQuote,
     SupplierStatus,
@@ -125,9 +122,9 @@ async def fan_out_rfq(
         raise ValueError(
             "Cannot fan out while there are unresolved clarification questions"
         )
-    if order.status not in (OrderStatus.DRAFT, OrderStatus.AWAITING_CLARIFICATION):
+    if order.status not in (OrderStatus.DRAFT, OrderStatus.AWAITING_CLARIFICATION, OrderStatus.PENDING_APPROVAL):
         raise ValueError(
-            f"Cannot fan out from status {order.status.value}; expected DRAFT or AWAITING_CLARIFICATION"
+            f"Cannot fan out from status {order.status.value}; expected DRAFT, AWAITING_CLARIFICATION, or PENDING_APPROVAL"
         )
 
     # ETA + ETD snapshot — the marketplace UI surfaces this for the
@@ -215,7 +212,7 @@ async def fan_out_rfq(
     rfq.extra = {
         "invited_supplier_ids": [str(s) for s in supplier_ids],
     }
-    order.status = OrderStatus.QUOTING
+    order.status = OrderStatus.PENDING_APPROVAL
 
     return rfq
 
@@ -383,12 +380,12 @@ async def supplier_submit_quote(
                 # were started via build_rfq_for_order before the
                 # redesign still live in rfq_in_progress; the
                 # redesign never migrated them.
-                OrderStatus.QUOTING,
-                OrderStatus.RFQ_IN_PROGRESS,
-                OrderStatus.BIDDING,
+                OrderStatus.PENDING_APPROVAL,
+                OrderStatus.RFQ_SENT,
+                OrderStatus.RFQ_CLOSED,
                 OrderStatus.AWAITING_CONFIRMATION,
             ):
-                order.status = OrderStatus.READY_FOR_COMPOSE
+                order.status = OrderStatus.RFQ_CLOSED
         db.add(quote)
         return quote
 
@@ -475,7 +472,14 @@ async def supplier_submit_quote(
         decline_reason=None,
         items=quote_items,
     )
-    rfq.responded_count += 1
+    # Only increment responded_count when the submission has actual
+    # content: either a declined decision (can_deliver_in_window=False)
+    # or a full quote with line items (lines not empty). A "yes" gate
+    # click with no lines just records the decision — the supplier will
+    # submit their full quote (with prices/quantities) later via the
+    # QuoteForm, and that submission will increment the count.
+    if can_deliver_in_window is False or (can_deliver_in_window is True and lines):
+        rfq.responded_count += 1
     if rfq.responded_count >= rfq.invited_count:
         rfq.status = RFQStatus.CLOSED
         # Order moves to READY_FOR_COMPOSE so the company knows
@@ -487,12 +491,12 @@ async def supplier_submit_quote(
         # went through the new fan-out.
         order = await _load_order(db, rfq.order_id)
         if order is not None and order.status in (
-            OrderStatus.QUOTING,
-            OrderStatus.RFQ_IN_PROGRESS,
-            OrderStatus.BIDDING,
+            OrderStatus.PENDING_APPROVAL,
+            OrderStatus.RFQ_SENT,
+            OrderStatus.RFQ_CLOSED,
             OrderStatus.AWAITING_CONFIRMATION,
         ):
-            order.status = OrderStatus.READY_FOR_COMPOSE
+            order.status = OrderStatus.RFQ_CLOSED
     db.add(quote)
     return quote
 
@@ -554,10 +558,10 @@ async def compose_proposal(
     # fallback the admin sees "Order is rfq_in_progress; cannot
     # compose proposal" and is stuck.
     if order.status not in (
-        OrderStatus.QUOTING,
-        OrderStatus.READY_FOR_COMPOSE,
-        OrderStatus.RFQ_IN_PROGRESS,
-        OrderStatus.BIDDING,
+        OrderStatus.PENDING_APPROVAL,
+        OrderStatus.RFQ_CLOSED,
+        OrderStatus.RFQ_SENT,
+        OrderStatus.RFQ_CLOSED,
         OrderStatus.AWAITING_CONFIRMATION,
     ):
         raise ValueError(
@@ -570,11 +574,11 @@ async def compose_proposal(
     # RFQs and sim-injected quotes can leave the order stuck
     # in rfq_in_progress with all suppliers already responded.
     if order.status in (
-        OrderStatus.RFQ_IN_PROGRESS,
-        OrderStatus.BIDDING,
+        OrderStatus.RFQ_SENT,
+        OrderStatus.RFQ_CLOSED,
         OrderStatus.AWAITING_CONFIRMATION,
     ):
-        order.status = OrderStatus.READY_FOR_COMPOSE
+        order.status = OrderStatus.RFQ_CLOSED
     # Same self-heal for the RFQ: if all invited suppliers have
     # responded but the RFQ is still OPEN (e.g. quotes were
     # inserted by the simulator without going through the
@@ -645,7 +649,7 @@ async def compose_proposal(
     for row in decision_rows:
         db.add(row)
     order.company_margin_pct = margin_pct
-    order.status = OrderStatus.AWAITING_PURCHASER_APPROVAL
+    order.status = OrderStatus.PENDING_APPROVAL
     return decision_rows
 
 
@@ -673,7 +677,7 @@ async def purchaser_approve_proposal(
     On reject:
       - order -> REJECTED with the reason
     """
-    if order.status != OrderStatus.AWAITING_PURCHASER_APPROVAL:
+    if order.status != OrderStatus.PENDING_APPROVAL:
         raise ValueError(
             f"Order is {order.status.value}; expected AWAITING_PURCHASER_APPROVAL"
         )
@@ -703,7 +707,7 @@ async def purchaser_approve_proposal(
         )
         db.add(sla)
         created.append(sla)
-    order.status = OrderStatus.CONFIRMED
+    order.status = OrderStatus.APPROVED
 
     # Notify each winning supplier. The notification service
     # writes one row per (user, notification). Suppliers are
@@ -841,27 +845,12 @@ async def sweep_preparation_timeouts(db: AsyncSession) -> dict[str, int]:
     Called by the asyncio background task started in ``app.main``
     lifespan; runs every 5 minutes. Returns a small summary
     (counts only — the rows themselves are the audit trail).
+
+    In the simplified marketplace there are no SupplierLineAssignment
+    rows (approval happens at order level, not per slice), so this
+    sweep is a no-op.
     """
-    now = _now()
-    expired = (await db.execute(
-        select(SupplierLineAssignment)
-        .where(
-            SupplierLineAssignment.line_status == AssignmentStatus.PENDING.value,
-            SupplierLineAssignment.preparation_deadline.isnot(None),
-            SupplierLineAssignment.preparation_deadline < now,
-        )
-    )).scalars().all()
-    dropped = 0
-    for sla in expired:
-        try:
-            await drop_slow_supplier(db, sla, reason="preparation_timeout_24h")
-            dropped += 1
-        except ValueError:
-            # Race with a manual confirm — skip silently.
-            continue
-    if dropped:
-        await db.commit()
-    return {"expired_seen": len(expired), "dropped": dropped}
+    return {"expired_seen": 0, "dropped": 0}
 
 
 async def sweep_rfq_deadlines(db: AsyncSession) -> dict[str, int]:
@@ -884,8 +873,8 @@ async def sweep_rfq_deadlines(db: AsyncSession) -> dict[str, int]:
     for rfq in expired:
         rfq.status = RFQStatus.CLOSED
         order = await _load_order(db, rfq.order_id)
-        if order is not None and order.status == OrderStatus.QUOTING:
-            order.status = OrderStatus.READY_FOR_COMPOSE
+        if order is not None and order.status == OrderStatus.PENDING_APPROVAL:
+            order.status = OrderStatus.RFQ_CLOSED
         progressed += 1
     if progressed:
         await db.commit()

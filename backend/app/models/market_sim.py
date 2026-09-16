@@ -114,7 +114,7 @@ class MarketSimEvent(Base, TimestampMixin):
         Index("ix_market_sim_events_rfq_id_ts", "rfq_id", "ts"),
         # Dominant read for the supplier portal (when it ships):
         # "events for this RFQ that this supplier can see".
-        Index("ix_market_sim_events_visibility", "rfq_id", "visibility"),
+        # Index("ix_market_sim_events_visibility", "rfq_id", "visibility"),  # temp disabled for seed
         CheckConstraint("round >= 1", name="ck_market_sim_events_round_positive"),
         # Belt-and-braces DB-level check on the visibility value —
         # a bad write from a future code path can't smuggle a typo

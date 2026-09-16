@@ -12,6 +12,9 @@ from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from sqlalchemy import select
+from app.models.user import Role, UserRole
+
 from app.models.notification import Notification, NotificationType
 from app.models.order import Order, OrderStatus
 
@@ -39,6 +42,24 @@ async def create_notification(
     )
     db.add(n)
     await db.flush()
+
+    # At every step, the super_admin gets every notification too
+    # (whether supplier-related or purchaser-related).
+    from app.models.user import Role, UserRole
+    admin_ids = (await db.execute(
+        select(UserRole.user_id).join(Role, Role.id == UserRole.role_id).where(Role.name == "super_admin")
+    )).scalars().all()
+    for admin_id in admin_ids:
+        if str(admin_id) != str(user_id):
+            admin_n = Notification(
+                user_id=admin_id,
+                type=type,
+                title=f"[Admin] {title}",
+                body=body,
+                data=data,
+            )
+            db.add(admin_n)
+    await db.flush()
     return n
 
 
@@ -48,10 +69,10 @@ async def create_notification(
 _ORDER_STATUS_LABEL = {
     OrderStatus.DRAFT: "draft",
     OrderStatus.PENDING_APPROVAL: "pending approval",
-    OrderStatus.RFQ_IN_PROGRESS: "RFQ in progress",
-    OrderStatus.BIDDING: "in bidding",
+    OrderStatus.RFQ_SENT: "RFQ sent",
+    OrderStatus.RFQ_CLOSED: "RFQ closed",
     OrderStatus.AWAITING_CONFIRMATION: "awaiting confirmation",
-    OrderStatus.CONFIRMED: "confirmed",
+    # CONFIRMED removed (simplified flow uses APPROVED)
     OrderStatus.IN_TRANSIT: "in transit",
     OrderStatus.DELIVERED: "delivered",
     OrderStatus.COMPLETED: "completed",

@@ -177,8 +177,8 @@ async def create_rfq(
         "invited_count": rfq.invited_count,
         "responded_count": rfq.responded_count,
         "response_deadline": rfq.response_deadline.isoformat(),
-        "eta_at_port": order.eta_at_port.isoformat() if order.eta_at_port else None,
-        "etd_at_port": order.etd_at_port.isoformat() if order.etd_at_port else None,
+        "eta_at_port": getattr(order, "eta_at_port", None).isoformat() if getattr(order, "eta_at_port", None) else None,
+        "etd_at_port": getattr(order, "etd_at_port", None).isoformat() if getattr(order, "etd_at_port", None) else None,
     }
 
 

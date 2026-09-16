@@ -210,7 +210,7 @@ async def get_thread(
     return {
         "order_id": str(order.id),
         "status": order.status.value,
-        "entries": order.clarification or [],
+        "entries": getattr(order, "clarification", None) or [],
         "summary": {
             "total": summary.total,
             "unanswered": summary.unanswered,

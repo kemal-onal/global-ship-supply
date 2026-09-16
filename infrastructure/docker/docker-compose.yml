@@ -50,6 +50,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-avs}:${POSTGRES_PASSWORD:-avs-dev-password}@postgres:5432/${POSTGRES_DB:-avs}
       SYNC_DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-avs}:${POSTGRES_PASSWORD:-avs-dev-password}@postgres:5432/${POSTGRES_DB:-avs}
       REDIS_URL: redis://redis:6379/0
+      PYTHONUTF8: 1
       JWT_PRIVATE_KEY_PATH: /app/secrets/jwt-private.pem
       JWT_PUBLIC_KEY_PATH: /app/secrets/jwt-public.pem
       CORS_ORIGINS: "http://localhost:5173,http://localhost"
@@ -59,8 +60,9 @@ services:
       - jwt-secrets:/app/secrets
     command: >
       sh -c "alembic upgrade head &&
+             PGPASSWORD=${POSTGRES_PASSWORD:-avs-dev-password} psql -h postgres -U ${POSTGRES_USER:-avs} -d ${POSTGRES_DB:-avs} -c \"ALTER TYPE unitofmeasure ADD VALUE IF NOT EXISTS 'pail';\" || true &&
              python scripts/seed.py --skip-if-populated &&
-             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+             python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
 
   # ─── AIS Data Simulator (synthetic traffic generator) ─────────────────
   # Reuses the backend's Dockerfile (it has the same Python deps).

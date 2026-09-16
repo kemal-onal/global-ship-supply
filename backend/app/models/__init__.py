@@ -39,13 +39,6 @@ from app.models.supplier import (
     RFQItem,
     SupplierQuote,
     QuoteItem,
-    BidComparison,
-    # Marketplace redesign (migration 0005)
-    LineDecision,
-    QuoteLineStatus,
-    AssignmentStatus,
-    OrderDecision,
-    SupplierLineAssignment,
 )
 from app.models.port import (
     Country,
@@ -80,9 +73,7 @@ __all__ = [
     "CrewNationality", "MenuTemplate", "MenuItem", "NutritionalInfo",
     "ProvisioningPlan", "ProvisioningItem", "DailyMenu", "MealServing",
     "Supplier", "SupplierPort", "SupplierRating",
-    "RFQ", "RFQItem", "SupplierQuote", "QuoteItem", "BidComparison",
-    "LineDecision", "QuoteLineStatus", "AssignmentStatus",
-    "OrderDecision", "SupplierLineAssignment",
+    "RFQ", "RFQItem", "SupplierQuote", "QuoteItem",
     "SyncQueue", "SyncConflict", "OfflineAction", "DeviceRegistration",
     "AuditLog", "SecurityEvent",
     "AisPositionReport", "AisEventType", "AisSource",

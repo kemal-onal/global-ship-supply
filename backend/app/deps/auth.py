@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.security import TokenData, decode_token
 from app.db.session import get_db, get_read_db
+from app.models.user import User
 
 oauth2_scheme = OAuth2PasswordBearer(
     tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False
@@ -60,6 +61,48 @@ async def get_current_token(
 
 
 CurrentToken = Annotated[TokenData, Depends(get_current_token)]
+
+
+async def get_current_user(
+    db: AsyncSession = Depends(db_session),
+    token: Annotated[str | None, Depends(oauth2_scheme)] = Depends(oauth2_scheme),
+) -> User:
+    """Get the current authenticated user from the JWT token."""
+    if not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    try:
+        payload = decode_token(token)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=str(e),
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from e
+    if payload.get("type") != "access":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid token type",
+        )
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing subject in token",
+        )
+    user = await db.get(User, user_id)
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User not found",
+        )
+    return user
+
+
+UserInDependency = Annotated[User, Depends(get_current_user)]
 
 
 def require_permission(resource: str, action: str, scope: str = "own") -> Callable:

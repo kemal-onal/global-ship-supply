@@ -77,7 +77,7 @@ export default function OrderDetailPage() {
   // AWAITING_PURCHASER_APPROVAL the composed proposal is the
   // canonical view. When it reaches CONFIRMED, the preparation
   // status panel is. We lazy-load them.
-  const showProposal = order?.status === 'awaiting_purchaser_approval'
+  const showProposal = order?.status === 'awaiting_purchaser_approval' || order?.status === 'rfq_closed'
   const showPreparation = order?.status === 'confirmed'
   const { data: proposal, isLoading: proposalLoading } = useQuery({
     queryKey: ['order', id, 'proposal'],
@@ -479,6 +479,77 @@ const canSendToSuppliers = isAdmin
                   available to admins, and only when no
                   clarifications are unresolved. */}
             </div>
+            {/* Final offer: purchaser approves/rejects the proposal directly from here */}
+            {(order?.status === 'rfq_closed' || order?.status === 'awaiting_purchaser_approval') && (
+              <div className="mb-3 p-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl">
+                <div className="text-sm font-semibold text-violet-800 dark:text-violet-300 mb-1">Final Offer</div>
+                <div className="text-xs text-violet-700 dark:text-violet-300 font-medium mb-3">
+                  Price: USD {proposal ? Number(proposal.customer_facing_subtotal || 0).toFixed(2) : '—'}, Quantity: {proposal ? (proposal.lines || []).reduce((sum, l) => sum + (l.used_quantity || 0), 0) + ' units' : '—'}
+                </div>
+                {/* Offer details from proposal */}
+                {proposal && (
+                  <div className="flex items-center gap-6 mb-3 text-sm">
+                    <div>
+                      <span className="text-xs text-slate-500">Final Price</span>
+                      <div className="font-bold text-base text-violet-700 dark:text-violet-300">
+                        USD {Number(proposal.customer_facing_subtotal || 0).toFixed(2)}
+                      </div>
+                    </div>
+                    <div>
+                      <span className="text-xs text-slate-500">Total Qty Agreed</span>
+                      <div className="font-bold text-base text-slate-800 dark:text-slate-200">
+                        {(proposal.lines || []).reduce((sum, l) => sum + (l.used_quantity || 0), 0)} units
+                      </div>
+                    </div>
+                    {proposal.margin_pct != null && (
+                      <div>
+                        <span className="text-xs text-slate-500">Markup</span>
+                        <div className="font-bold text-base text-amber-600 dark:text-amber-400">{proposal.margin_pct}%</div>
+                      </div>
+                    )}
+                  </div>
+                )}
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => decideProposal.mutate(true)}
+                    disabled={decideProposal.isPending}
+                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 inline-flex items-center gap-2"
+                  >
+                    <Check className="w-4 h-4" /> Accept the offer
+                  </button>
+                  <button
+                    onClick={() => { setShowRejectForm(true); }}
+                    disabled={decideProposal.isPending}
+                    className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 inline-flex items-center gap-2"
+                  >
+                    <X className="w-4 h-4" /> Decline the offer
+                  </button>
+                </div>
+                {showRejectForm && (
+                  <div className="mt-3 p-3 border border-rose-200 dark:border-rose-800 rounded-lg bg-rose-50/50 dark:bg-rose-900/10">
+                    <label className="block text-xs font-semibold text-rose-700 mb-1.5">Reason for decline</label>
+                    <textarea
+                      value={rejectReason}
+                      onChange={e => setRejectReason(e.target.value)}
+                      rows={2}
+                      placeholder="Why are you declining this offer?"
+                      className="w-full px-3 py-2 bg-white dark:bg-slate-800 border border-rose-200 dark:border-rose-800 rounded text-sm"
+                    />
+                    <div className="mt-2 flex items-center justify-end gap-2">
+                      <button onClick={() => setShowRejectForm(false)} className="px-3 py-1.5 text-sm text-slate-600 hover:bg-slate-100 rounded">Cancel</button>
+                      <button
+                        onClick={() => decideProposal.mutate(false)}
+                        disabled={decideProposal.isPending || !rejectReason.trim()}
+                        className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium rounded disabled:opacity-50 inline-flex items-center gap-2"
+                      >
+                        {decideProposal.isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : <X className="w-3 h-3" />}
+                        Confirm decline
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
             {(rfqs || []).length === 0 ? (
               <p className="text-sm text-slate-500">No RFQ sent yet</p>
             ) : (
@@ -496,7 +567,15 @@ const canSendToSuppliers = isAdmin
                           {r.invited_count} invited · {r.responded_count} responded
                         </div>
                       </div>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${palette[r.status]}`}>
+                      {r.status === 'rfq_closed' || r.status === 'awaiting_purchaser_approval' ? (
+                  <Link
+                    to={`/marketplace/decide/${r.id}`}
+                    className="ml-2 inline-flex items-center gap-1 px-3 py-1.5 bg-violet-600 hover:bg-violet-700 text-white text-xs font-medium rounded-lg"
+                  >
+                    Make Decision
+                  </Link>
+                ) : null}
+                <span className={`text-xs px-2 py-0.5 rounded-full ${palette[r.status]}`}>
                         {r.status}
                       </span>
                     </div>

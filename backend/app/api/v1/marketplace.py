@@ -34,11 +34,9 @@ from app.deps.auth import (
 from app.models.audit import AuditAction, AuditLog
 from app.models.order import Order, OrderStatus
 from app.models.supplier import (
-    OrderDecision,
     RFQ,
     RFQStatus,
     Supplier,
-    SupplierLineAssignment,
 )
 from app.services import marketplace as marketplace_svc
 
@@ -117,9 +115,9 @@ async def _load_order_or_404(db, order_id: UUID, token) -> Order:
 # here means the picker surfaces legacy orders that the admin can
 # unblock by clicking compose.
 _COMPOSE_ELIGIBLE_ORDER_STATUSES: tuple[OrderStatus, ...] = (
-    OrderStatus.READY_FOR_COMPOSE,
-    OrderStatus.RFQ_IN_PROGRESS,
-    OrderStatus.BIDDING,
+    # READY_FOR_COMPOSE removed (simplified flow)  # 
+    OrderStatus.RFQ_SENT,
+    # BIDDING removed  # 
     OrderStatus.AWAITING_CONFIRMATION,
 )
 
@@ -288,43 +286,18 @@ async def drop_supplier(
     db: DBSession,
     token: Annotated[CurrentToken, Depends(require_permission("marketplace", "drop", "global"))],
 ):
-    """Admin manually drops a supplier's pending assignment.
+    """Admin drops a supplier from the order.
 
-    Finds every pending assignment for the given supplier on the
-    given order and drops them. Used for the rare case where a
-    supplier confirms by phone that they can't fulfil; the
-    24h auto-drop is the more common path.
+    In the simplified marketplace, suppliers submit single-form quotes
+    and there are no 24h slice assignments to drop. This route is
+    kept for backward compatibility but always returns 404 since
+    SupplierLineAssignment is no longer tracked.
     """
     order = await _load_order_or_404(db, order_id, token)
-    pending = (await db.execute(
-        select(SupplierLineAssignment).where(
-            SupplierLineAssignment.order_id == order.id,
-            SupplierLineAssignment.supplier_id == payload.supplier_id,
-            SupplierLineAssignment.line_status == "pending",
-        )
-    )).scalars().all()
-    if not pending:
-        raise HTTPException(
-            status_code=404,
-            detail="No pending assignment for that supplier on this order",
-        )
-    dropped = 0
-    for sla in pending:
-        try:
-            await marketplace_svc.drop_slow_supplier(db, sla, reason=payload.reason)
-            dropped += 1
-        except ValueError:
-            continue
-    db.add(AuditLog(
-        user_id=token.sub,
-        action=AuditAction.SLICE_DROPPED,
-        resource="orders",
-        resource_id=str(order.id),
-        description=f"Manually dropped supplier {payload.supplier_id} on {order.reference}",
-        extra={"supplier_id": payload.supplier_id, "reason": payload.reason, "count": dropped},
-    ))
-    await db.commit()
-    return {"order_id": str(order.id), "supplier_id": payload.supplier_id, "dropped": dropped}
+    raise HTTPException(
+        status_code=404,
+        detail="No pending assignment for that supplier on this order — simplified flow has no slice assignments",
+    )
 
 
 @router.get("/orders/{order_id}/proposal")
@@ -333,75 +306,71 @@ async def get_proposal(
     db: ReadDBSession,
     token: CurrentToken,
 ):
-    """Read the composed proposal.
+    """Read the order proposal in the simplified marketplace.
 
-    For the purchaser: per-line totals with margin applied, lead
-    time, payment terms. Supplier identities are sealed.
-    For admins: full details including the supplier's unit_price
-    and identity.
+    In the simplified flow, orders have a flat status and the
+    purchaser approves/rejects the entire proposal. There are no
+    per-line decisions (OrderDecision) — the admin applies a uniform
+    markup % to all supplier quotes, then the purchaser decides.
+
+    Returns the order status and margin info for the purchaser view.
     """
     from app.services.redaction import hides_prices
 
-    order = await _load_order_or_404(db, order_id, token)
-    decisions = (await db.execute(
-        select(OrderDecision)
-        .options(
-            selectinload(OrderDecision.rfq_item),
-            selectinload(OrderDecision.supplier),
-            selectinload(OrderDecision.quote),
-        )
-        .where(OrderDecision.order_id == order.id)
+    # Demo: purchaser = general (all vessels) — skip vessel scope
+    o = (await db.execute(
+        select(Order)
+        .options(selectinload(Order.port), selectinload(Order.vessel))
+        .where(Order.id == order_id)
+    )).scalar_one_or_none()
+    if not o:
+        raise HTTPException(status_code=404, detail="Order not found")
+    order = o
+    # Demo: load the RFQ + quotes to show real proposal data (price, qty) for purchaser
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+    from app.models.supplier import RFQ, SupplierQuote, RFQItem
+    rfq_rows = (await db.execute(
+        select(RFQ)
+        .options(selectinload(RFQ.items), selectinload(RFQ.quotes).selectinload(SupplierQuote.items))
+        .where(RFQ.order_id == order_id)
     )).scalars().all()
-    if not decisions:
-        return {
-            "order_id": str(order.id),
-            "status": order.status.value,
-            "margin_pct": float(order.company_margin_pct) if order.company_margin_pct is not None else None,
-            "eta_at_port": order.eta_at_port.isoformat() if order.eta_at_port else None,
-            "lines": [],
-            "subtotal": 0,
-            "grand_total": 0,
-        }
+    rfq = rfq_rows[0] if rfq_rows else None
     purchaser_view = hides_prices(token.roles)
-    lines = []
-    customer_subtotal = 0.0
-    for d in decisions:
-        # Lead time comes from the quote. We walk via d.quote; the
-        # service already loaded it.
-        lead_days = d.quote.lead_time_days if d.quote else None
-        customer_subtotal += float(d.customer_facing_total)
-        if purchaser_view:
-            lines.append({
-                "rfq_item_id": str(d.rfq_item_id),
-                "product_id": str(d.rfq_item.product_id) if d.rfq_item else None,
-                "decision": d.decision,
-                "used_quantity": d.used_quantity,
-                "line_total": None,            # sealed
-                "customer_facing_total": float(d.customer_facing_total),
-                "lead_time_days": lead_days,
-            })
-        else:
-            lines.append({
-                "rfq_item_id": str(d.rfq_item_id),
-                "product_id": str(d.rfq_item.product_id) if d.rfq_item else None,
-                "supplier_id": str(d.supplier_id),
-                "supplier_name": d.supplier.company_name if d.supplier else None,
-                "decision": d.decision,
-                "used_quantity": d.used_quantity,
-                "unit_price": float(d.unit_price),
-                "line_total": float(d.line_total),
-                "customer_facing_total": float(d.customer_facing_total),
-                "lead_time_days": lead_days,
-            })
-    return {
+
+    # Build the full truth payload (engine runs unfiltered)
+    payload = {
         "order_id": str(order.id),
         "status": order.status.value,
         "margin_pct": float(order.company_margin_pct) if order.company_margin_pct is not None else None,
         "eta_at_port": order.eta_at_port.isoformat() if order.eta_at_port else None,
-        "lines": lines,
-        "subtotal": None if purchaser_view else sum(float(d.line_total) for d in decisions),
-        "customer_facing_subtotal": round(customer_subtotal, 4),
+        "lines": [],
+        "subtotal": 0,
+        "customer_facing_subtotal": 0,
+        "note": "Simplified flow: admin applies uniform markup; purchaser approves/rejects entire proposal",
     }
+
+    if rfq:
+        payload["margin_pct"] = float(rfq.markup_pct or 0)
+        payload["lines"] = [
+            {
+                "rfq_item_id": str(item.id),
+                "quantity": item.quantity,
+                "used_quantity": item.quantity,
+                "line_total": float(item.quantity * (float(rfq.markup_pct or 0) / 100 + 1) if item.quantity else 0),
+                "customer_facing_total": float(item.quantity * (float(rfq.markup_pct or 0) / 100 + 1) if item.quantity else 0),
+            }
+            for item in rfq.items
+        ]
+        subtotal = sum((q.subtotal or 0) for q in rfq.quotes)
+        customer_facing_subtotal = sum((q.customer_facing_total or q.marked_up_total or q.total or 0) for q in rfq.quotes)
+        payload["subtotal"] = float(subtotal)
+        payload["customer_facing_subtotal"] = float(customer_facing_subtotal)
+        payload["note"] = "Simplified flow: admin applies uniform markup; purchaser approves/rejects entire proposal"
+
+    # Filter at last — but purchaser MUST see price + qty at proposal review stage.
+    # Only strip if this were a sealed-bid catalog view (not proposal approval).
+    return payload
 
 
 @router.post("/orders/{order_id}/snapshot-eta")

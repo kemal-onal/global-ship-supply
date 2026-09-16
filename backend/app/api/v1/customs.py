@@ -4,8 +4,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.deps.auth import CurrentToken, ReadDBSession
-from app.models.order import Order
+from app.models.order import Order, OrderItem
 from app.models.port import Country, CustomsRule, PortRegulation
+from app.models.product import Product
 from app.services.customs import evaluate_order, has_blocking_issue, summarize
 
 router = APIRouter()
@@ -38,7 +39,17 @@ async def evaluate(
     db: ReadDBSession,
     token: CurrentToken,
 ):
-    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    order = (await db.execute(
+        select(Order)
+        .options(
+            selectinload(Order.vessel),
+            selectinload(Order.port),
+            selectinload(Order.items)
+            .selectinload(OrderItem.product)
+            .selectinload(Product.category),
+        )
+        .where(Order.id == order_id)
+    )).scalar_one_or_none()
     if not order:
         raise HTTPException(status_code=404, detail="Order not found")
     issues = await evaluate_order(db, order)

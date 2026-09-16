@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter
 from sqlalchemy import case, func, select
+from sqlalchemy.orm import selectinload
 
 from app.deps.auth import CurrentToken, ReadDBSession
 from app.models.audit import SecurityEvent, SecuritySeverity
@@ -49,7 +50,7 @@ async def overview(
     # RFQ pipeline
     rfqs_open = (await db.execute(
         select(func.count()).select_from(RFQ).where(
-            RFQ.status.in_([RFQStatus.SENT, RFQStatus.OPEN])
+            RFQ.status.in_([RFQStatus.SENT])
         )
     )).scalar_one()
     # Sync health
@@ -107,7 +108,7 @@ async def recent_orders(
     limit: int = 20,
 ):
     rows = (await db.execute(
-        select(Order).order_by(Order.order_date.desc()).limit(limit)
+        select(Order).options(selectinload(Order.vessel), selectinload(Order.port)).order_by(Order.order_date.desc()).limit(limit)
     )).scalars().all()
     return [
         {

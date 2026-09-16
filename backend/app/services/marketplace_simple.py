@@ -21,6 +21,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.services.notifications import create_notification
+from app.models.notification import NotificationType
 from app.models.order import Order, OrderStatus
 from app.models.supplier import (
     QuoteItem,
@@ -119,6 +121,12 @@ async def fan_out_rfq(
     }
     order.status = OrderStatus.RFQ_SENT
 
+    # Notification: admin (super_admin) + purchaser (order.created_by) + suppliers (invited)
+    await create_notification(
+        db, user_id=order.created_by, type=NotificationType.SYSTEM,
+        title=f"RFQ sent: {order.reference}", body=f"RFQ {rfq.reference} sent to suppliers at {order.port_id}.",
+        data={"order_id": str(order.id), "rfq_id": str(rfq.id), "step": "rfq_sent"},
+    )
     return rfq
 
 
@@ -259,6 +267,19 @@ async def supplier_submit_quote(
 
     rfq.responded_count += 1
     db.add(quote)
+    await db.flush()  # so quote.id is available for notification
+
+    # Notification: supplier submitted quote; purchaser + admin notified
+    # Use the purchaser (order creator) as recipient — supplier.id is NOT a users.id
+    order_for_notif = (await db.execute(
+        select(Order).where(Order.id == rfq.order_id)
+    )).scalar_one_or_none()
+    purchaser_id = order_for_notif.created_by if order_for_notif else None
+    await create_notification(
+        db, user_id=purchaser_id, type=NotificationType.SYSTEM,
+        title=f"Quote submitted: {quote.reference}", body=f"Supplier {supplier.id} submitted quote for RFQ {rfq.reference}.",
+        data={"rfq_id": str(rfq.id), "quote_id": str(quote.id) if quote.id else None, "step": "quote_submitted"},
+    )
     return quote
 
 
@@ -286,9 +307,19 @@ async def apply_markup(
     )).scalars().all()
 
     for quote in quotes:
-        quote.marked_up_total = round(quote.total * (1 + markup_pct / 100), 4)
+        quote.marked_up_total = round(float(quote.total) * (1 + markup_pct / 100), 4)
         quote.customer_facing_total = quote.marked_up_total
 
+    # Notification: markup applied; purchaser (order.created_by) + supplier notified
+    order_for_notif = (await db.execute(
+        select(Order).where(Order.id == rfq.order_id)
+    )).scalar_one_or_none()
+    purchaser_id = order_for_notif.created_by if order_for_notif else None
+    await create_notification(
+        db, user_id=purchaser_id, type=NotificationType.SYSTEM,
+        title=f"Markup applied: {markup_pct}% on {rfq.reference}", body=f"Admin applied {markup_pct}% markup to RFQ {rfq.reference}.",
+        data={"rfq_id": str(rfq.id), "markup_pct": markup_pct, "step": "markup_applied"},
+    )
     return rfq
 
 
@@ -312,6 +343,14 @@ async def send_to_purchaser(
     )).scalar_one_or_none()
     if order is not None:
         order.status = OrderStatus.RFQ_CLOSED
+
+    # Notification: RFQ sent to purchaser; purchaser + admin notified
+    if order is not None and order.created_by is not None:
+        await create_notification(
+            db, user_id=order.created_by, type=NotificationType.SYSTEM,
+            title=f"Proposal ready for review: {rfq.reference}", body=f"RFQ {rfq.reference} has been marked up and sent to you for approval/rejection.",
+            data={"rfq_id": str(rfq.id), "step": "sent_to_purchaser"},
+        )
 
     return rfq
 
@@ -345,6 +384,12 @@ async def purchaser_decide(
         rfq.status = RFQStatus.CANCELLED
         order.status = OrderStatus.DRAFT
         order.rejection_reason = reason
+        # Notification: purchaser decided to reject; purchaser + supplier + admin notified
+        await create_notification(
+            db, user_id=order.created_by, type=NotificationType.SYSTEM,
+            title=f"Proposal rejected: {rfq.reference}", body=f"Purchaser rejected the proposal for RFQ {rfq.reference}. Order returned to DRAFT.",
+            data={"rfq_id": str(rfq.id), "order_id": str(order.id), "step": "purchaser_decide_reject"},
+        )
         return {
             "order_id": str(order.id),
             "rfq_id": str(rfq.id),
@@ -368,6 +413,13 @@ async def purchaser_decide(
     order.status = OrderStatus.APPROVED
     order.approved_at = _now()
     order.approved_by = order.created_by  # Purchaser is typically the creator
+
+    # Notification: purchaser approved; purchaser + supplier + admin notified
+    await create_notification(
+        db, user_id=order.created_by, type=NotificationType.SYSTEM,
+        title=f"Proposal approved: {rfq.reference}", body=f"Purchaser approved the proposal for RFQ {rfq.reference}. Order APPROVED, RFQ AWARDED.",
+        data={"rfq_id": str(rfq.id), "order_id": str(order.id), "step": "purchaser_decide_approve"},
+    )
 
     return {
         "order_id": str(order.id),

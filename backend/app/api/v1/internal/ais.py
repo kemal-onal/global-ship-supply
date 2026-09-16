@@ -21,11 +21,11 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Depends
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 
-from app.deps.auth import DBSession
+from app.deps.auth import DBSession, require_role
 from app.models.ais import AisEventType, AisPositionReport, AisSource
 
 router = APIRouter()
@@ -161,6 +161,7 @@ async def ingest_batch(
 @router.get("/positions")
 async def list_positions(
     db: DBSession,
+    token=Depends(require_role("super_admin", "fleet_admin")),
     mmsi: str | None = Query(default=None, description="Filter by MMSI"),
     event_type: AisEventType | None = Query(default=None),
     scenario: str | None = Query(default=None),

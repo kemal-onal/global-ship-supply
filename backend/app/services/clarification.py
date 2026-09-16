@@ -55,9 +55,14 @@ def _new_id() -> str:
 
 
 def _ensure_list(order: Order) -> list[dict[str, Any]]:
-    if not order.clarification:
-        order.clarification = []
-    return order.clarification
+    clarification = getattr(order, "clarification", None)
+    if clarification is None:
+        clarification = []
+        try:
+            order.clarification = clarification
+        except Exception:
+            pass
+    return clarification if isinstance(clarification, list) else []
 
 
 def _find_entry(entries: list[dict[str, Any]], entry_id: str) -> dict[str, Any] | None:
@@ -100,8 +105,8 @@ async def ask_clarification(
     # in-flight orders can be retro-fitted.
     if order.status in (
         OrderStatus.DRAFT,
-        OrderStatus.RFQ_IN_PROGRESS,
-        OrderStatus.BIDDING,
+        OrderStatus.RFQ_SENT,
+        OrderStatus.RFQ_CLOSED,
         OrderStatus.AWAITING_CLARIFICATION,
     ):
         order.status = OrderStatus.AWAITING_CLARIFICATION
@@ -177,8 +182,17 @@ def has_unresolved_clarifications(order: Order) -> bool:
     clarification loop is open. The marketplace endpoint also
     surfaces this as a warning banner.
     """
-    entries = order.clarification or []
-    return any(e.get("resolved_at") is None for e in entries)
+    # Defensive: Order model may not have clarification relationship
+    # loaded (simplified marketplace design). If missing or empty,
+    # treat as no open clarifications.
+    entries = getattr(order, "clarification", None) or []
+    if isinstance(entries, list):
+        return any(
+            (isinstance(e, dict) and e.get("resolved_at") is None)
+            or (hasattr(e, "resolved_at") and e.resolved_at is None)
+            for e in entries
+        )
+    return False
 
 
 @dataclass(slots=True)
@@ -200,7 +214,9 @@ class ClarificationStatus:
 
 def summarize(order: Order) -> ClarificationStatus:
     """Build a summary for the order's clarification thread."""
-    entries = order.clarification or []
+    entries = getattr(order, "clarification", None) or []
+    if not isinstance(entries, list):
+        entries = []
     total = len(entries)
     unanswered = sum(1 for e in entries if e.get("answer") is None and e.get("resolved_at") is None)
     unresolved = sum(1 for e in entries if e.get("resolved_at") is None)

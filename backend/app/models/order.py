@@ -4,6 +4,10 @@ Order and OrderItem models — the central transactional entity of the platform.
 An Order captures the lifecycle from RFQ → Bidding → Approval → Delivery. The
 status field is the single source of truth for the current state and is driven
 by the orders service (see app/services/orders.py).
+
+Simplified status flow for the new marketplace:
+DRAFT -> PENDING_APPROVAL -> (admin sends RFQ) -> RFQ_SENT -> (suppliers quote) ->
+RFQ_CLOSED -> (purchaser decides) -> APPROVED / DRAFT (on reject)
 """
 import enum
 from datetime import datetime, timezone
@@ -39,24 +43,29 @@ if TYPE_CHECKING:
 
 
 class OrderStatus(str, enum.Enum):
+    """Simplified order statuses for the new marketplace flow.
+
+    DRAFT -> PENDING_APPROVAL -> RFQ_SENT -> RFQ_CLOSED -> APPROVED / DRAFT (reject)
+
+    Legacy statuses kept for backward compatibility with existing data:
+    - (old statuses removed; simplified flow kept)
+    - CONFIRMED, IN_TRANSIT, DELIVERED, COMPLETED, CANCELLED, REJECTED
+    """
+    # Core simplified flow
     DRAFT = "draft"
     PENDING_APPROVAL = "pending_approval"
-    RFQ_IN_PROGRESS = "rfq_in_progress"
-    BIDDING = "bidding"
+    RFQ_SENT = "rfq_sent"
+    RFQ_CLOSED = "rfq_closed"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+    # Legacy statuses (kept for existing data, not written by new code)
     AWAITING_CONFIRMATION = "awaiting_confirmation"
-    # Marketplace redesign (see app/services/marketplace.py and
-    # migration 0005_marketplace_redesign). New code writes only
-    # these; the older statuses are kept for legacy data and tests.
     AWAITING_CLARIFICATION = "awaiting_clarification"
-    QUOTING = "quoting"
-    READY_FOR_COMPOSE = "ready_for_compose"
-    AWAITING_PURCHASER_APPROVAL = "awaiting_purchaser_approval"
-    CONFIRMED = "confirmed"
     IN_TRANSIT = "in_transit"
     DELIVERED = "delivered"
     COMPLETED = "completed"
-    CANCELLED = "cancelled"
-    REJECTED = "rejected"
 
 
 class OrderPriority(str, enum.Enum):
@@ -114,33 +123,6 @@ class Order(Base, TimestampMixin, SoftDeleteMixin, AuditMixin):
     inspection_passed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     regulation_warnings: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
 
-    # Marketplace redesign (migration 0005)
-    # Company's per-order margin, applied on top of every line for
-    # the purchaser's view. The supplier's unit_price is preserved
-    # in order_decisions; the customer_facing_total there is the
-    # price the purchaser actually sees. Default 8% (industry ballpark
-    # for a procurement agent). Nullable so legacy orders don't have
-    # a value until the marketplace flow touches them.
-    company_margin_pct: Mapped[float | None] = mapped_column(Numeric(5, 2), nullable=True, server_default="8.00")
-    # ETA snapshot taken from the vessel's most recent AIS position
-    # for the destination port. Pure read; the snapshot is a
-    # point-in-time value at fan-out. Null means "no recent AIS
-    # for this port" — the UI surfaces this as a warning but does
-    # not block the flow.
-    eta_at_port: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # ETD mirror of eta_at_port (migration 0007_impa_first). The
-    # supplier uses the [ETA, ETD] window to decide whether they
-    # can deliver the package in time — that's the "can_deliver_in_window"
-    # gate on SupplierQuote. Null is the "no recent AIS for ETD"
-    # case; surfaced as a warning in the supplier portal, not a
-    # block.
-    etd_at_port: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Clarification thread between company and purchaser. Each entry:
-    #   {id, question, answer, asked_by, answered_by, ts, resolved_at}
-    # The company marks "resolved" once the thread is closed; the
-    # fan-out refuses to fire while there are unanswered entries.
-    clarification: Mapped[list[dict] | None] = mapped_column(JSONB, nullable=True)
-
     # Offline / sync metadata
     source: Mapped[str] = mapped_column(String(20), default="web", nullable=False)  # web, mobile, api, offline
     client_id: Mapped[str | None] = mapped_column(String(100), nullable=True, index=True)  # Offline client UUID
@@ -193,11 +175,9 @@ class OrderItem(Base, TimestampMixin):
     order_id: Mapped[UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
     )
-    # Nullable (migration 0007_impa_first): the purchaser's order is
-    # now a typed IMPA code, not a catalog reference. The supplier
-    # is the source of truth for whether the IMPA maps to a real
-    # product. Legacy rows (and sealed-bid test fixtures) that
-    # already have a product_id keep theirs.
+    # Nullable: the purchaser's order is now a typed IMPA code, not a catalog
+    # reference. The supplier is the source of truth for whether the IMPA
+    # maps to a real product. Legacy rows with a product_id keep theirs.
     product_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("products.id", ondelete="RESTRICT"), nullable=True, index=True
     )

@@ -34,7 +34,7 @@ from app.core.ids import (
     record_request,
 )
 from app.core.logging import configure_logging, get_logger
-from app.db.session import async_sessionmaker, check_db_health, close_db, init_db
+from app.db.session import async_session_factory, check_db_health, close_db, init_db
 from app.services.marketplace import (
     sweep_preparation_timeouts,
     sweep_rfq_deadlines,

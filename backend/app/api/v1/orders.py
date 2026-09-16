@@ -2,7 +2,8 @@
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from uuid import UUID
 from pydantic import BaseModel, Field
 from sqlalchemy import or_, select
 from sqlalchemy.orm import selectinload
@@ -12,7 +13,7 @@ from app.models.audit import AuditAction, AuditLog
 from app.models.order import Order, OrderItem, OrderPriority, OrderStatus
 from app.models.product import Product
 from app.services.customs import evaluate_order, has_blocking_issue, summarize
-from app.services.notifications import notify_order_transition
+from app.services.notifications import create_notification, notify_order_transition
 from app.services.redaction import (
     hides_prices,
     is_supplier,
@@ -73,6 +74,33 @@ class OrderIn(BaseModel):
     search_by_impa: bool = False
 
 
+class OrderItemUpdate(BaseModel):
+    """Partial update for a single order line — IMPA-first flow.
+
+    ``id`` is the primary key; ``impa_code`` is accepted as a
+    fallback key for legacy callers. Exactly one of (id, impa_code)
+    must be present to locate the line.
+    """
+    id: Optional[str] = None
+    impa_code: Optional[str] = None
+    quantity: Optional[int] = Field(default=None, ge=1)
+    unit: Optional[str] = None
+    notes: Optional[str] = None
+    # Marketplace redesign: description is merged into notes on
+    # create; accepting it here for API symmetry and mapping it
+    # the same way.
+    description: Optional[str] = None
+
+
+class OrderUpdate(BaseModel):
+    """Editable order fields — only valid when status == DRAFT."""
+    customer_notes: Optional[str] = None
+    internal_notes: Optional[str] = None
+    priority: Optional[OrderPriority] = None
+    required_by: Optional[datetime] = None
+    items: Optional[list[OrderItemUpdate]] = None
+
+
 def _serialize(o: Order, *, caller_roles: list[str]) -> dict:
     """Build the wire payload for an order, then apply the caller's
     view filter (purchaser / supplier / company). The DB always holds
@@ -104,11 +132,6 @@ def _serialize(o: Order, *, caller_roles: list[str]) -> dict:
         "tax_total": float(o.tax_total),
         "shipping_total": float(o.shipping_total),
         "grand_total": float(o.grand_total),
-        # IMPA-first: ETA/ETD snapshot from the fan-out step. Null
-        # for orders that haven't been sent to suppliers yet (no
-        # AIS available, or the fan-out hasn't run).
-        "eta_at_port": o.eta_at_port.isoformat() if o.eta_at_port else None,
-        "etd_at_port": o.etd_at_port.isoformat() if o.etd_at_port else None,
         "customer_notes": o.customer_notes,
         "internal_notes": o.internal_notes,
         "source": o.source,
@@ -121,6 +144,7 @@ def _serialize(o: Order, *, caller_roles: list[str]) -> dict:
                 "product_name": it.product.name if it.product else None,
                 "product_sku": it.product.sku if it.product else None,
                 "impa_code": it.impa_code,
+                "description": it.notes,  # IMPA-first: description merged into notes
                 "quantity": it.quantity,
                 "unit": it.unit,
                 "notes": it.notes,
@@ -334,6 +358,16 @@ async def create_order(
         },
     ))
 
+    from app.models.notification import NotificationType
+    await create_notification(
+        db,
+        user_id=token.sub,
+        type=NotificationType.ORDER_TRANSITION,
+        title=f"New order created: {order.reference}",
+        body=f"Order {order.reference} was created with {len(order.items)} items.",
+        data={"order_id": str(order.id), "reference": order.reference},
+    )
+
     await db.commit()
     # Eager-load relationships needed for _serialize — async sessions
     # can't lazy-load, so we re-query with selectinload.
@@ -393,35 +427,26 @@ async def list_order_assignments(
     db: ReadDBSession,
     token: CurrentToken,
 ):
-    """Admin view of the slices on a confirmed order.
+    """Admin view of supplier quotes on a confirmed order.
 
-    One row per OrderDecision that became a SupplierLineAssignment.
-    Used by the OrderDetail preparation-status panel to show
-    which suppliers have confirmed and which are still pending
-    (and need dropping after the 24h window).
+    In the simplified marketplace, suppliers submit single-form quotes
+    and the admin applies a uniform markup %. There are no 24h slice
+    assignments or per-supplier confirmation states to track.
     """
     from app.deps.auth import assert_vessel_access
-    from app.models.supplier import Supplier, SupplierLineAssignment
 
     o = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
     if not o:
         raise HTTPException(status_code=404, detail="Order not found")
     await assert_vessel_access(token, o.vessel_id)
-    rows = (await db.execute(
-        select(SupplierLineAssignment)
-        .options(
-            selectinload(SupplierLineAssignment.supplier),
-            selectinload(SupplierLineAssignment.rfq_item),
-        )
-        .where(SupplierLineAssignment.order_id == o.id)
-        .order_by(SupplierLineAssignment.created_at.asc())
-    )).scalars().all()
+    # In simplified flow, quotes are tracked via SupplierQuote, not
+    # SupplierLineAssignment. Return basic order info.
     return [
         {
-            "id": str(sla.id),
-            "rfq_item_id": str(sla.rfq_item_id),
-            "supplier_id": str(sla.supplier_id),
-            "supplier_name": sla.supplier.company_name if sla.supplier else None,
+            "order_id": str(o.id),
+            "order_reference": o.reference,
+            "status": o.status.value,
+            "note": "Simplified flow: no slice assignments; supplier quotes tracked via SupplierQuote, admin applies uniform markup %",
             "product_id": str(sla.rfq_item.product_id) if sla.rfq_item else None,
             "line_status": sla.line_status,
             "confirmed_at": sla.confirmed_at.isoformat() if sla.confirmed_at else None,
@@ -431,3 +456,96 @@ async def list_order_assignments(
         }
         for sla in rows
     ]
+
+
+@router.post("/{order_id}/submit")
+async def submit_order(
+    order_id: UUID,
+    db: DBSession,
+):
+    from sqlalchemy import select
+    from app.models.order import Order, OrderStatus
+    order = (await db.execute(select(Order).where(Order.id == order_id))).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    order.status = OrderStatus.PENDING_APPROVAL
+    await db.commit()
+    return {"status": order.status.value, "message": "Submitted for approval"}
+
+
+@router.patch("/{order_id}")
+async def update_order(
+    order_id: UUID,
+    payload: OrderUpdate,
+    db: DBSession,
+    token: CurrentToken,
+):
+    """Edit a draft order: line items (impa_code, qty, unit, notes)
+    and order-level fields (customer_notes, internal_notes, priority, required_by).
+
+    Only orders in DRAFT are editable. Only the purchasing officer
+    (creator or admin) may edit — this is the gate before
+    ``POST /{order_id}/submit`` locks the order into PENDING_APPROVAL.
+    """
+    from sqlalchemy import select as _select
+    from sqlalchemy.orm import selectinload
+    order = (await db.execute(_select(Order).options(selectinload(Order.vessel), selectinload(Order.port), selectinload(Order.items)).where(Order.id == order_id))).scalar_one_or_none()
+    if order is None:
+        raise HTTPException(status_code=404, detail="Order not found")
+    if order.status != OrderStatus.DRAFT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Order is {order.status.value}; only DRAFT orders are editable",
+        )
+    # RBAC gate: creator or admin/purchasing officer
+    is_creator = str(order.created_by) == token.sub
+    is_admin = token.has_any_role(["super_admin", "fleet_admin", "admin"])
+    if not is_creator and not is_admin:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the purchasing officer or admin may edit draft orders",
+        )
+
+    if payload.items is not None:
+        item_map: dict[str, OrderItem] = {str(i.id): i for i in order.items}
+        for upd in payload.items:
+            # Locate the line — by id first, then impa_code fallback.
+            matched: OrderItem | None = None
+            if upd.id:
+                matched = item_map.get(str(upd.id))
+            elif upd.impa_code:
+                for it in order.items:
+                    if it.impa_code == upd.impa_code:
+                        matched = it
+                        break
+            if matched is None:
+                raise HTTPException(status_code=404, detail=f"Line item {upd.id or upd.impa_code} not found in this order")
+            if upd.impa_code is not None:
+                matched.impa_code = upd.impa_code
+            if upd.quantity is not None:
+                matched.quantity = upd.quantity
+            if upd.unit is not None:
+                matched.unit = upd.unit
+            if upd.notes is not None:
+                matched.notes = upd.notes
+            if upd.description is not None:
+                # IMPA-first: merge into notes (same logic as create).
+                if matched.notes and upd.description:
+                    matched.notes = f"{upd.description}\n---\n{matched.notes}"
+                elif upd.description:
+                    matched.notes = upd.description
+
+    if payload.customer_notes is not None:
+        order.customer_notes = payload.customer_notes
+    if payload.internal_notes is not None:
+        order.internal_notes = payload.internal_notes
+    if payload.priority is not None:
+        order.priority = payload.priority
+    if payload.required_by is not None:
+        order.required_by = payload.required_by
+
+    await db.commit()
+    await db.refresh(order, attribute_names=["items", "vessel"])
+    return _serialize(order, caller_roles=token.roles)
+# Co-Authored-By: Claude Code <noreply@anthropic.com>
+# 🤖 Generated with [Claude Code](https://claude.com/claude-code)

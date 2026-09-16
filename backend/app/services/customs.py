@@ -153,6 +153,8 @@ async def evaluate_order(
     items_meta: list[dict] = []
     for oi in order.items:
         p = oi.product
+        if not p:
+            continue
         items_meta.append({
             "product_id": str(p.id),
             "hs_code": p.hs_code or "",
@@ -180,6 +182,8 @@ async def evaluate_order(
             continue
         matched: list[str] = []
         for oi in order.items:
+            if not oi.product:
+                continue
             if _check_applicability(rule, oi.product, vessel):
                 if _eval_condition(json.loads(rule.condition_expression) if rule.condition_expression else None, {**context, "item": next(i for i in items_meta if i["product_id"] == str(oi.product_id))}):
                     matched.append(str(oi.product_id))
@@ -210,6 +214,8 @@ async def evaluate_order(
         matched: list[str] = []
         for oi in order.items:
             p = oi.product
+            if not p:
+                continue
             if rule.hs_code_pattern and p.hs_code and p.hs_code.startswith(rule.hs_code_pattern.split(".")[0]):
                 matched.append(str(p.id))
             elif rule.product_categories and p.category.code in rule.product_categories:

@@ -2,11 +2,11 @@
 from datetime import date as date_type
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.deps.auth import CurrentToken, DBSession, ReadDBSession
+from app.deps.auth import CurrentToken, DBSession, ReadDBSession, require_role
 from app.models.catering import (
     CrewNationality,
     CrewNationalityEnum,
@@ -23,7 +23,7 @@ router = APIRouter()
 @router.get("/nationalities")
 async def list_nationalities(
     db: ReadDBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
 ):
     rows = (await db.execute(select(CrewNationality).order_by(CrewNationality.name))).scalars().all()
     return [
@@ -44,7 +44,7 @@ async def list_nationalities(
 @router.get("/menus")
 async def list_menu_templates(
     db: ReadDBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
     nationality: CrewNationalityEnum | None = None,
 ):
     stmt = select(MenuTemplate).order_by(MenuTemplate.nationality, MenuTemplate.meal_type)
@@ -68,7 +68,7 @@ async def list_menu_templates(
 @router.get("/provisioning-plans")
 async def list_plans(
     db: ReadDBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
     vessel_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
@@ -99,7 +99,7 @@ async def list_plans(
 async def get_plan(
     plan_id: str,
     db: ReadDBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
 ):
     p = (await db.execute(select(ProvisioningPlan).where(ProvisioningPlan.id == plan_id))).scalar_one_or_none()
     if not p:
@@ -146,7 +146,7 @@ class GeneratePlanIn(BaseModel):
 async def generate_plan(
     payload: GeneratePlanIn,
     db: DBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
 ):
     vessel = (await db.execute(select(Vessel).where(Vessel.id == payload.vessel_id))).scalar_one_or_none()
     if not vessel:
@@ -178,7 +178,7 @@ async def generate_plan(
 @router.post("/compute-targets")
 async def compute_targets(
     payload: dict,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
 ):
     """Pure helper — compute daily calorie targets for a crew breakdown
     using the configured default per-person target."""
@@ -197,7 +197,7 @@ class GeneratePlanSimpleIn(BaseModel):
 async def generate_plan_simple(
     payload: GeneratePlanSimpleIn,
     db: DBSession,
-    token: CurrentToken,
+    token = Depends(require_role("super_admin", "fleet_admin", "vessel_captain", "chief_steward")),
 ):
     """Frontend-friendly alias of /provisioning-plans.
 

@@ -47,9 +47,9 @@ const nav = [
   // entry is dropped; users navigate to the order page directly.
   { to: '/orders', label: 'Orders', icon: ClipboardList },
   { to: '/vessels', label: 'Vessels', icon: Ship },
-  { to: '/fleet-map', label: 'Live Fleet Map', icon: Map },
+  { to: '/fleet-map', label: 'Live Fleet Map', icon: Map, roles: ['super_admin', 'fleet_admin'] },
   { to: '/ports', label: 'Ports', icon: MapPin },
-  { to: '/catering', label: 'Catering & Provisioning', icon: UtensilsCrossed },
+  { to: '/catering', label: 'Catering & Provisioning', icon: UtensilsCrossed, roles: ['super_admin', 'fleet_admin', 'vessel_captain', 'chief_steward'] },
   { to: '/rfq', label: 'RFQ & Bidding', icon: Gavel },
   {
     to: '/marketplace',

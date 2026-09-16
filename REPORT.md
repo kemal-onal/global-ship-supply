@@ -510,6 +510,16 @@ would exceed 100 nm of cross-track error on the SG→SH leg
 because the great circle arcs through the East China Sea
 while the straight line cuts through the South China Sea.
 
+### 2026-09-16 updates (current session)
+
+- **Deepest filter**: `backend/app/services/redaction.py` (`hides_prices` at line 76) applies redaction at the response boundary, not at DB query time.
+- **Notifications fan-out**: `notifications.py` creates duplicate rows for every `super_admin` with `[Admin]` title prefix.
+- **Marketplace proposal endpoint (`GET /orders/{id}/proposal`)**: skips vessel-scope gate at load (`assert_vessel_access` removed), loads RFQ directly by `order_id`, applies filter at output.
+- **Frontend proposal buttons**: `OrderDetail.jsx` has embedded "Accept the offer" / "Decline the offer" with subtitle showing price/qty.
+- **Docker / compose**: `PYTHONUTF8=1`, `python -m uvicorn`, SQL seed `ALTER TYPE ... ADD VALUE IF NOT EXISTS 'pail';`.
+- **Unsolved**: admin proposal page (`/marketplace/markup`) and order detail (`/orders/{id}`) show no final price/quantity (`No price on the order`). Endpoint returns full truth; likely frontend/query mismatch (Image #16 / #17). See `WORK_SUMMARY_2026-09-16.md` in the dev folder.
+- **Note**: `mock-up-backup/` (dev) and `mock-up-for_git/` (GitHub) are separate folders with separate `readme.md` files — they never sync (`two-readmes-two-audiences.md`).
+
 ---
 
 ## What we'd do next

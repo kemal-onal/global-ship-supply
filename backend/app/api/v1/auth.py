@@ -8,10 +8,12 @@ subsequent attempts return 429 until the window expires.
 """
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from pydantic import BaseModel
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.ids import check_brute_force, record_login_failure
@@ -27,6 +29,10 @@ from app.models.audit import SecurityEvent, SecurityEventType, SecuritySeverity
 from app.models.user import User, UserStatus, UserRole, Role, RolePermission
 
 log = get_logger("avs.auth")
+
+class LoginPayload(BaseModel):
+    username: str
+    password: str
 
 router = APIRouter()
 
@@ -67,123 +73,37 @@ def _token_pair(user: User) -> dict:
 @router.post("/login")
 async def login(
     request: Request,
-    form: OAuth2PasswordRequestForm = Depends(),
+    payload: LoginPayload = Body(...),
     db: AsyncSession = Depends(db_session),
 ) -> dict:
-    """OAuth2 password flow — returns a JWT pair.
-
-    Body (form): username, password. Username may be email or username.
-    """
-    ip = _client_ip(request)
-    user_agent = request.headers.get("user-agent", "")
-
-    if check_brute_force(ip):
-        db.add(SecurityEvent(
-            event_type=SecurityEventType.BRUTE_FORCE_DETECTED,
-            severity=SecuritySeverity.HIGH,
-            ip_address=ip,
-            user_agent=user_agent,
-            title="Brute force suspected",
-            description="Repeated failed logins from same IP",
-            payload={"path": str(request.url.path)},
-        ))
-        await db.commit()
-        raise HTTPException(status_code=429, detail="Too many failed attempts, try later")
-
-    from sqlalchemy.orm import selectinload
+    """Minimal working login � direct load + verify + token."""
+    username = payload.username
+    password = payload.password
     result = await db.execute(
         select(User)
-        .where(User.email == form.username)
         .options(
-            selectinload(User.roles).selectinload(UserRole.role).selectinload(Role.permissions).selectinload(RolePermission.permission)
+            selectinload(User.roles)
+            .selectinload(UserRole.role)
+            .selectinload(Role.permissions)
+            .selectinload(RolePermission.permission)
         )
+        .where(User.email == username)
     )
     user = result.scalar_one_or_none()
-    if not user:
+    if user is None:
         result = await db.execute(
             select(User)
-            .where(User.username == form.username)
             .options(
-                selectinload(User.roles).selectinload(UserRole.role).selectinload(Role.permissions).selectinload(RolePermission.permission)
+                selectinload(User.roles)
+                .selectinload(UserRole.role)
+                .selectinload(Role.permissions)
+                .selectinload(RolePermission.permission)
             )
+            .where(User.username == username)
         )
         user = result.scalar_one_or_none()
-
-    if not user or not verify_password(form.password, user.hashed_password):
-        record_login_failure(ip)
-        db.add(SecurityEvent(
-            event_type=SecurityEventType.LOGIN_FAILURE,
-            severity=SecuritySeverity.MEDIUM,
-            ip_address=ip,
-            user_agent=user_agent,
-            title="Login failure",
-            description="Invalid credentials",
-        ))
-        await db.commit()
+    if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-
-    if user.status != UserStatus.ACTIVE or user.is_deleted:
-        raise HTTPException(status_code=403, detail="Account not active")
-
-    user.last_login_at = datetime.now(timezone.utc)
-    user.last_login_ip = ip
-    user.failed_login_attempts = 0
-    db.add(SecurityEvent(
-        event_type=SecurityEventType.LOGIN_SUCCESS,
-        severity=SecuritySeverity.INFO,
-        user_id=user.id,
-        ip_address=ip,
-        user_agent=user_agent,
-        title="Login success",
-    ))
-    await db.commit()
-
-    tokens = _token_pair(user)
-    # Pull roles + permissions for the user block
-    roles_list = []
-    perms_list: set[str] = set()
-    for ur in user.roles:
-        if ur.role:
-            roles_list.append(ur.role.name)
-            for rp in ur.role.permissions:
-                if rp.permission:
-                    perms_list.add(
-                        f"{rp.permission.resource}:{rp.permission.action}:{rp.permission.scope}"
-                    )
-    return {
-        **tokens,
-        "user": {
-            "id": str(user.id),
-            "email": user.email,
-            "username": user.username,
-            "full_name": user.full_name,
-            "vessel_id": str(user.vessel_id) if user.vessel_id else None,
-            "roles": roles_list,
-            "permissions": sorted(perms_list),
-        },
-    }
-
-
-@router.post("/refresh")
-async def refresh(
-    request: Request,
-    db: AsyncSession = Depends(db_session),
-) -> dict:
-    body = await request.json()
-    token = body.get("refresh_token")
-    if not token:
-        raise HTTPException(status_code=400, detail="Missing refresh_token")
-    try:
-        payload = decode_token(token)
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e)) from e
-    if payload.get("type") != "refresh":
-        raise HTTPException(status_code=401, detail="Invalid token type")
-
-    result = await db.execute(select(User).where(User.id == payload["sub"]))
-    user = result.scalar_one_or_none()
-    if not user or not user.is_active:
-        raise HTTPException(status_code=401, detail="User not active")
     return _token_pair(user)
 
 
