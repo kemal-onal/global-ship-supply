@@ -125,8 +125,8 @@ rows. Production needs:
 | **Offline ordering** when VSAT drops              | IndexedDB + Service Worker + replay engine with idempotency keys + conflict detection                  |
 | **Auth** that survives IP changes at sea          | JWT (RS256) with 8-day access + 30-day refresh, RBAC with `resource:action:scope`                      |
 | **Six-role RBAC with vessel scoping**             | Route-level `require_permission` + row-level `assert_vessel_access`; cross-vessel reads return 404     |
-| **Sealed-bid RFQ** for non-admin callers          | Response-side redaction in `rfq_serializers.py`; counter-offer terms classified `winner_only`          |
-| **Marketplace redesign** (fan-out + per-line)     | `compose_proposal` + `supplier_accept_slice`; 24h preparation window with backend sweeper             |
+| **Sealed-bid RFQ** for non-admin callers          | Response-side redaction in `redaction.py` (`hides_prices` at deepest layer, line 76) + `rfq_serializers.py`; counter-offer terms classified `winner_only`          |
+| **Marketplace redesign + simplified flow**          | `compose_proposal` + `supplier_accept_slice` (redesigned); `marketplace_simple.py` fan-out RFQ (simplified). Proposal endpoint (`GET /orders/{id}/proposal`) loads RFQ directly (no vessel gate at query), applies redaction (`hides_prices`) only at output stage. Admin and purchaser both see price + qty at proposal review. |
 | **IMPA-first ordering**                           | Order line has no price; IMPA typeahead in `OrderCreate`; ETA/ETD delivery gate; clarification thread |
 | **Supplier portal** with vessel redaction         | `GET /supplier-portal/rfqs`; suppliers see "Vessel #N" only; can-deliver-in-window gate before pricing |
 | **IDS/IPS** at the perimeter                      | Brute-force counter, port-scan detector, SQL/XSS injection filter, structured security events          |
@@ -1100,7 +1100,7 @@ nullable `read_at` (NULL = unread).
 
 **Server side** — `app/services/notifications.py` exposes two helpers:
 
-- `create_notification(db, *, user_id, type, title, body, data)` — insert one
+- `create_notification(db, *, user_id, type, title, body, data)` — insert one. Every call also creates a duplicate for all `super_admin` users with `[Admin]` title prefix (`select(UserRole.user_id).join(Role)...where Role.name == 'super_admin'`).
 - `notify_order_transition(db, order, old_status, *, actor_id=None)` —
   the most common call site. Called from `POST /api/v1/orders/{id}/transition`
   whenever an order's status changes. The recipient is `order.assigned_to`

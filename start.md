@@ -55,10 +55,8 @@ The `uvicorn.exe` launcher in this `.venv` has a corrupted interpreter path (`Ma
 
 ## 3. Frontend (Vite — localhost:5173 → 8000 proxy)
 
-In the **same shell** (still inside `backend/`):
-
 ```powershell
-cd ../frontend
+cd /frontend
 npm run dev
 ```
 
