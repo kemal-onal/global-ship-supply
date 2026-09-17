@@ -520,6 +520,15 @@ while the straight line cuts through the South China Sea.
 - **Unsolved**: admin proposal page (`/marketplace/markup`) and order detail (`/orders/{id}`) show no final price/quantity (`No price on the order`). Endpoint returns full truth; likely frontend/query mismatch (Image #16 / #17). See `WORK_SUMMARY_2026-09-16.md` in the dev folder.
 - **Note**: `mock-up-backup/` (dev) and `mock-up-for_git/` (GitHub) are separate folders with separate `readme.md` files — they never sync (`two-readmes-two-audiences.md`).
 
+### 2026-09-17 updates
+
+- **Cookie auth migration (Fix A)**: supervisor instruction completed (`relocate avs-auth to cookies from localhost`). `backend/app/api/v1/auth.py`: `/login` sets `httponly=False` access cookie + `httponly=True` refresh cookie; `/refresh` reads cookie and issues new pair with eager-loaded roles/permissions (`selectinload`). `frontend/src/store/auth.js` uses `readCookie()` init, `restoreFromCookie()` calls `/auth/me`. See [`docs/auth-cookie-migration.md`](./docs/auth-cookie-migration.md).
+- **P1 bugs (#1-6)**: all fixed (`sim/routes.py` duplicate waypoint removed; `sim/runner.py` flush interval fixed; `sim/world.py` sim-time `ts`, arrival `<=`, departure ETA `* 0.5`; `sim/types.py` dead clause; `sim/vessels.py` O(1) index). Verified: 15/16 world tests pass (expected sim-time failure confirms fix #3).
+- **P2 bugs (#7-10)**: verified as design choices, not hidden bugs (global dwell; `VISUAL_SPEED_BOOST`/ETA split; `lru_cached` settings; mixed event shapes). Documented, no code changes.
+- **P3 bugs (#11-14)**: `sim/types.py` dead clause fixed; `sim/vessels.py` O(1) index verified; double waypoint call documented; `Waypoint.eta` guard confirmed fine.
+- **New unsolved bugs**: full `pytest backend/` revealed 6 import errors (missing `AssignmentStatus`, `AWAITING_PURCHASER_APPROVAL`, deprecated `ConfigDict`, direct `UUID` call, defensive cookie split, cookie domain/path). Documented in [`possible_bugs.md`](./possible_bugs.md) — 12 total unsolved (0 fixes applied). See [`WORK_SUMMARY_2026-09-17.md`](./WORK_SUMMARY_2026-09-17.md) for full session details.
+- **Security preserved**: cookie refresh token remains `HttpOnly`; cookie domain/path settings (`COOKIE_DOMAIN=localhost`, `COOKIE_SECURE=false`) preserved; profile-based isolation (not same-tab multi-account) confirmed per supervisor design.
+
 ---
 
 ## What we'd do next

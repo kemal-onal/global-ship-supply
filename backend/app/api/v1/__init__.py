@@ -44,6 +44,8 @@ api_router.include_router(permissions.router, prefix="/permissions", tags=["perm
 # routers expose paths under /orders/ — FastAPI matches in include
 # order, so putting clarification first prevents it from being
 # shadowed and resolves GET /api/v1/orders/{id}/clarification.
+# Marketplace redesign routes (redesigned flow with proposal, compose, etc.)
+api_router.include_router(marketplace.router, tags=["marketplace"])
 # Simplified marketplace (new flow)
 api_router.include_router(marketplace_simple.router, tags=["marketplace-simple"])
 # Supplier portal: the supplier-facing app, separate prefix

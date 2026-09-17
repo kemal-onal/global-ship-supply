@@ -105,12 +105,15 @@ VESSELS: list[Vessel] = [
 ]
 
 
+_VESSEL_BY_MMSI: dict[str, Vessel] = {v.mmsi: v for v in VESSELS}
+
+
 def get_vessel(mmsi: str) -> Vessel:
     """Look up a vessel by MMSI. Raises ``KeyError`` if unknown."""
-    for v in VESSELS:
-        if v.mmsi == mmsi:
-            return v
-    raise KeyError(f"Unknown vessel MMSI: {mmsi!r}")
+    vessel = _VESSEL_BY_MMSI.get(mmsi)
+    if vessel is None:
+        raise KeyError(f"Unknown vessel MMSI: {mmsi!r}")
+    return vessel
 
 
 __all__ = ["VESSELS", "get_vessel"]

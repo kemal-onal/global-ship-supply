@@ -21,6 +21,10 @@ import PortsPage from './pages/Ports'
 import CateringPage from './pages/Catering'
 import RFQPage from './pages/RFQ'
 import MarketplacePage from './pages/Marketplace'
+import MarketplaceSendPage from './pages/MarketplaceSend'
+import MarketplaceMarkupPage from './pages/MarketplaceMarkup'
+import MarketplaceReviewPage from './pages/MarketplaceReview'
+import MarketplaceDecisionPage from './pages/MarketplaceDecision'
 import SupplierPortalPage from './pages/SupplierPortal'
 import CustomsPage from './pages/Customs'
 import SyncPage from './pages/Sync'
@@ -29,6 +33,12 @@ import PermissionsPage from './pages/Permissions'
 
 export default function App() {
   const accessToken = useAuthStore(s => s.accessToken)
+  const user = useAuthStore(s => s.user)
+  const restoreFromCookie = useAuthStore(s => s.restoreFromCookie)
+
+  useEffect(() => {
+    if (accessToken && !user) restoreFromCookie()
+  }, [accessToken, user])
 
   // Lock body background to theme
   useEffect(() => {
@@ -60,6 +70,10 @@ export default function App() {
         <Route path="/rfq" element={<RFQPage />} />
         <Route path="/marketplace" element={<MarketplacePage />} />
         <Route path="/marketplace/:rfqId" element={<MarketplacePage />} />
+        <Route path="/marketplace/send" element={<MarketplaceSendPage />} />
+        <Route path="/marketplace/markup/:rfqId" element={<MarketplaceMarkupPage />} />
+        <Route path="/marketplace/review/:rfqId" element={<MarketplaceReviewPage />} />
+        <Route path="/marketplace/decide/:rfqId" element={<MarketplaceDecisionPage />} />
         <Route path="/supplier" element={<SupplierPortalPage />} />
         <Route path="/supplier/rfq/:rfqId" element={<SupplierPortalPage />} />
         <Route path="/customs" element={<CustomsPage />} />

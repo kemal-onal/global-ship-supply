@@ -130,18 +130,27 @@ PORTS = [
 ]
 
 VESSELS = [
-    ("9464567", "MV Marmara", VesselTypeEnum.CONTAINER, "TR", "Maersk Line", 350, 48, 15.5, 150000, 22),
-    ("9789123", "MV Aegean", VesselTypeEnum.BULK_CARRIER, "GR", "Star Bulk", 290, 45, 18.0, 180000, 20),
-    ("9598231", "MV Bosphorus", VesselTypeEnum.TANKER, "PA", "Turkish Petroleum", 330, 60, 20.5, 300000, 24),
-    ("9843210", "MV Antalya", VesselTypeEnum.CONTAINER, "TR", "Arkas Line", 300, 42, 14.0, 100000, 21),
-    ("9711234", "MV Pacific Voyager", VesselTypeEnum.CONTAINER, "LR", "Pacific Shipping", 360, 51, 16.0, 165000, 23),
-    ("9634567", "MV North Star", VesselTypeEnum.BULK_CARRIER, "MH", "Ocean Bulk Co", 280, 43, 17.5, 170000, 19),
-    ("9754321", "MV Istanbul", VesselTypeEnum.GENERAL_CARGO, "TR", "Turkish Cargo", 150, 23, 9.5, 15000, 18),
-    ("9823456", "MV Rotterdam Express", VesselTypeEnum.CONTAINER, "NL", "Rotterdam Line", 340, 47, 15.0, 140000, 22),
-    ("9987654", "MV Singapore Pearl", VesselTypeEnum.CONTAINER, "SG", "Pacific Orient", 320, 46, 14.5, 130000, 21),
-    ("9645123", "MV Dubai Star", VesselTypeEnum.LNG_CARRIER, "AE", "Gulf Energy", 290, 47, 12.0, 95000, 26),
-    ("9543210", "MV Hamburg", VesselTypeEnum.CONTAINER, "DE", "Hapag-Lloyd", 335, 48, 15.2, 145000, 22),
-    ("9734567", "MV Yokohama", VesselTypeEnum.REEFER, "JP", "Japan Reefer Co", 180, 28, 9.0, 12000, 20),
+    # MMSI column added: the AIS simulator emits reports keyed by
+    # MMSI, and the ETA snapshot service joins ``ais_position_reports``
+    # to ``vessels`` on MMSI to compute the vessel's ETA at the
+    # order's destination port. Without an MMSI on each vessel, the
+    # snapshot is always empty and the marketplace UI shows the
+    # "no AIS ETA snapshot" warning. The simulator uses synthetic
+    # MMSIs in the 9xx range; the demo vessels are assigned a
+    # contiguous block 900000001–900000012 so they're easy to
+    # recognize in the AIS feed.
+    ("9464567", "900000001", "MV Marmara", VesselTypeEnum.CONTAINER, "TR", "Maersk Line", 350, 48, 15.5, 150000, 22),
+    ("9789123", "900000002", "MV Aegean", VesselTypeEnum.BULK_CARRIER, "GR", "Star Bulk", 290, 45, 18.0, 180000, 20),
+    ("9598231", "900000003", "MV Bosphorus", VesselTypeEnum.TANKER, "PA", "Turkish Petroleum", 330, 60, 20.5, 300000, 24),
+    ("9843210", "900000004", "MV Antalya", VesselTypeEnum.CONTAINER, "TR", "Arkas Line", 300, 42, 14.0, 100000, 21),
+    ("9711234", "900000005", "MV Pacific Voyager", VesselTypeEnum.CONTAINER, "LR", "Pacific Shipping", 360, 51, 16.0, 165000, 23),
+    ("9634567", "900000006", "MV North Star", VesselTypeEnum.BULK_CARRIER, "MH", "Ocean Bulk Co", 280, 43, 17.5, 170000, 19),
+    ("9754321", "900000007", "MV Istanbul", VesselTypeEnum.GENERAL_CARGO, "TR", "Turkish Cargo", 150, 23, 9.5, 15000, 18),
+    ("9823456", "900000008", "MV Rotterdam Express", VesselTypeEnum.CONTAINER, "NL", "Rotterdam Line", 340, 47, 15.0, 140000, 22),
+    ("9987654", "900000009", "MV Singapore Pearl", VesselTypeEnum.CONTAINER, "SG", "Pacific Orient", 320, 46, 14.5, 130000, 21),
+    ("9645123", "900000010", "MV Dubai Star", VesselTypeEnum.LNG_CARRIER, "AE", "Gulf Energy", 290, 47, 12.0, 95000, 26),
+    ("9543210", "900000011", "MV Hamburg", VesselTypeEnum.CONTAINER, "DE", "Hapag-Lloyd", 335, 48, 15.2, 145000, 22),
+    ("9734567", "900000012", "MV Yokohama", VesselTypeEnum.REEFER, "JP", "Japan Reefer Co", 180, 28, 9.0, 12000, 20),
 ]
 
 # IMPA 6-digit code book (sample, structure matches the real IMPA catalog)
@@ -187,6 +196,14 @@ CATEGORIES = [
 ]
 
 SUPPLIERS = [
+    # Three demo suppliers first — their contact_email matches a
+    # User in USERS, so the supplier portal automatically wires
+    # them up. Each is anchored to a specific primary port so
+    # when you run an order through Rotterdam / Singapore /
+    # Dubai you can log in as one of these and see the RFQ.
+    ("Rotterdam Demo Supplies", "Rotterdam Demo Supplies B.V.", "supplier1@avsglobal.com", "NL", "Rotterdam", ["provisions", "deck_stores", "engine_stores", "safety", "consumables"], "EUR"),
+    ("Singapore Demo Supplies", "Singapore Demo Supplies Pte Ltd", "supplier2@avsglobal.com", "SG", "Singapore", ["provisions", "deck_stores", "engine_stores", "safety", "consumables"], "USD"),
+    ("Dubai Demo Supplies", "Dubai Demo Supplies LLC", "supplier3@avsglobal.com", "AE", "Dubai", ["provisions", "deck_stores", "engine_stores", "safety", "consumables"], "USD"),
     ("Maritime Provisions B.V.", "Rotterdam Provisions", "contact@marprov.nl", "NL", "Rotterdam", ["provisions", "bond_store"], "EUR"),
     ("Hellas Supply Co.", "Hellas Marine", "sales@hellas-supply.gr", "GR", "Piraeus", ["deck_stores", "engine_stores", "lubricants"], "EUR"),
     ("Asia Pacific Chandlers", "APC Marine", "info@apcmarine.sg", "SG", "Singapore", ["provisions", "deck_stores", "safety"], "USD"),
@@ -201,10 +218,27 @@ SUPPLIERS = [
 
 USERS = [
     ("admin@avsglobal.com", "admin", "AVS Administrator", "admin123", "super_admin", None),
+    ("fleetadmin@avsglobal.com", "fleetadmin", "Fleet Admin (Demo)", "demo123", "fleet_admin", None),
     ("captain@avsglobal.com", "captain", "Captain Mehmet Yılmaz", "demo123", "vessel_captain", 0),
     ("purchasing@avsglobal.com", "purchaser", "Ayşe Demir", "demo123", "purchasing_officer", 0),
     ("steward@avsglobal.com", "steward", "Carlos Reyes", "demo123", "chief_steward", 0),
-    ("supplier@apcmarine.sg", "apcmarine", "APC Marine (Supplier)", "demo123", "supplier", None),
+    # The APC Marine Supplier row (further down in SUPPLIERS) has
+    # contact_email="info@apcmarine.sg". The supplier portal's
+    # _load_supplier_for_token resolves the Supplier via
+    # User.email == Supplier.contact_email, so the User's email
+    # must match. (Earlier seed versions used
+    # "supplier@apcmarine.sg" which never matched the Supplier
+    # row and produced a 403 on every login — see the
+    # audit-action-enum-bug memory.)
+    ("info@apcmarine.sg", "apcmarine", "APC Marine (Supplier)", "demo123", "supplier", None),
+    # Three controllable demo suppliers — one per major hub. The
+    # login email is the same string the Supplier row's
+    # contact_email uses, so the supplier portal's invitation
+    # filter (User.email == Supplier.contact_email) wires them
+    # up without any extra glue.
+    ("supplier1@avsglobal.com", "supplier1", "Rotterdam Demo Supplies", "demo123", "supplier", None),
+    ("supplier2@avsglobal.com", "supplier2", "Singapore Demo Supplies", "demo123", "supplier", None),
+    ("supplier3@avsglobal.com", "supplier3", "Dubai Demo Supplies", "demo123", "supplier", None),
 ]
 
 
@@ -269,6 +303,8 @@ async def seed_roles_and_permissions(db: AsyncSession) -> dict[str, Role]:
             "rfq:manage:vessel", "rfq:simulate:own", "quotes:compare:own",
             "regulations:read:global", "customs:check:own", "sync:manage:own",
             "reports:read:fleet",
+            # Marketplace redesign: purchaser approves the composed proposal
+            "marketplace:approve:own",
         ],
         "chief_steward": [
             "vessels:read:own", "catering:create:own", "catering:read:own",
@@ -279,6 +315,12 @@ async def seed_roles_and_permissions(db: AsyncSession) -> dict[str, Role]:
         "supplier": [
             "products:read:global", "rfq:read:own", "quotes:submit:own",
             "quotes:read:own", "orders:read:own",
+            # Marketplace redesign: supplier sees their invited RFQs,
+            # submits a quote (full/partial/none per line), and accepts
+            # their slice once the purchaser approves.
+            "supplier_portal:view:global",
+            "supplier_portal:quote:global",
+            "supplier_portal:accept:global",
         ],
     }
     for role_name, perm_names in role_perms.items():
@@ -354,9 +396,9 @@ async def seed_ports(db: AsyncSession, country_map: dict[str, Country]) -> dict[
 async def seed_vessels(db: AsyncSession) -> list[Vessel]:
     print("→ Seeding vessels")
     out = []
-    for imo, name, vtype, flag, owner, loa, beam, draft, dwt, crew in VESSELS:
+    for imo, mmsi, name, vtype, flag, owner, loa, beam, draft, dwt, crew in VESSELS:
         stmt = insert(Vessel).values(
-            imo_number=imo, name=name, vessel_type=vtype, flag_state=flag,
+            imo_number=imo, mmsi=mmsi, name=name, vessel_type=vtype, flag_state=flag,
             owner=owner, loa=loa, beam=beam, draft_summer=draft, dwt=dwt,
             crew_capacity=crew, current_crew_count=crew,
             vsat_provider="Inmarsat" if random.random() > 0.5 else "Iridium",
@@ -843,10 +885,34 @@ async def seed_suppliers(
 
     # Each supplier serves a few ports
     port_ids = list(port_map.values())
+    # The first three suppliers in SUPPLIERS are the demo
+    # "supplier1/2/3" accounts. Anchor each one to its
+    # matching port by unlocode so the supplier portal shows
+    # them RFQs for orders at that port. The remaining seeded
+    # suppliers get random ports (matching the original behavior).
+    demo_port_unlocodes = {
+        "supplier1@avsglobal.com": "NLRTM",  # Rotterdam
+        "supplier2@avsglobal.com": "SGSIN",  # Singapore
+        "supplier3@avsglobal.com": "AEDXB",  # Dubai
+    }
     for s in suppliers:
-        # Pick 2-3 random ports
-        for p in random.sample(port_ids, k=min(3, len(port_ids))):
-            db.add(SupplierPort(supplier_id=s.id, port_id=p.id, is_primary=True))
+        if s.contact_email in demo_port_unlocodes:
+            # Anchor the demo supplier to its primary port + a
+            # couple of nearby ports so they're not blind to
+            # everything else.
+            unlocode = demo_port_unlocodes[s.contact_email]
+            primary = port_map.get(unlocode)
+            chosen = []
+            if primary is not None:
+                chosen.append(primary)
+            others = [p for p in port_ids if p.id != (primary.id if primary else None)]
+            for p in random.sample(others, k=min(2, len(others))):
+                chosen.append(p)
+            for p in chosen:
+                db.add(SupplierPort(supplier_id=s.id, port_id=p.id, is_primary=True))
+        else:
+            for p in random.sample(port_ids, k=min(3, len(port_ids))):
+                db.add(SupplierPort(supplier_id=s.id, port_id=p.id, is_primary=True))
         # Each supplier offers a few products matching their categories
         product_rows = (await db.execute(
             select(Product.id).limit(200)

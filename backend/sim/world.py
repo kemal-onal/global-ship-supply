@@ -290,7 +290,7 @@ class World:
             state.current_lat, state.current_lon,
             route.destination.lat, route.destination.lon,
         )
-        hours_remaining = remaining_nm / max(1.0, self._cruise_speed(state.vessel))
+        hours_remaining = remaining_nm / max(1.0, self._cruise_speed(state.vessel) * 0.5)
         state.eta_destination = now + timedelta(hours=hours_remaining)
         events_out.append(SimEvent(
             event_type="port_departure",
@@ -400,7 +400,7 @@ class World:
             state.current_lat, state.current_lon,
             route.destination.lat, route.destination.lon,
         )
-        if d_to_dest_after < ARRIVAL_THRESHOLD_NM:
+        if d_to_dest_after <= ARRIVAL_THRESHOLD_NM:
             self._arrive_at_port(state, now, events_out)
         else:
             # Recompute ETA occasionally (every tick is fine for now).
@@ -522,7 +522,7 @@ class World:
         # surface it as the report timestamp.
         return PositionReport(
             event_type="position_report",
-            ts=datetime.now(timezone.utc),
+            ts=now,
             mmsi=v.mmsi,
             imo=v.imo,
             vessel_name=v.name,

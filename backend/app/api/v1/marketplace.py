@@ -37,6 +37,7 @@ from app.models.supplier import (
     RFQ,
     RFQStatus,
     Supplier,
+    SupplierQuote,
 )
 from app.services import marketplace as marketplace_svc
 
@@ -326,30 +327,27 @@ async def get_proposal(
     if not o:
         raise HTTPException(status_code=404, detail="Order not found")
     order = o
-    # Demo: load the RFQ + quotes to show real proposal data (price, qty) for purchaser
-    from sqlalchemy import select
-    from sqlalchemy.orm import selectinload
-    from app.models.supplier import RFQ, SupplierQuote, RFQItem
+
+    # Build payload base — company_margin_pct removed by migration 0009; derive from data
+    payload = {
+        "order_id": str(order.id),
+        "status": order.status.value,
+        "margin_pct": 0.0,
+        "eta_at_port": None,
+        "lines": [],
+        "subtotal": 0,
+        "customer_facing_subtotal": 0,
+        "note": "",
+    }
+
+    # Simplified flow: proposal built from RFQ data (redesigned OrderDecision
+    # model is not loaded in this simplified deployment; use RFQ + quotes)
     rfq_rows = (await db.execute(
         select(RFQ)
         .options(selectinload(RFQ.items), selectinload(RFQ.quotes).selectinload(SupplierQuote.items))
         .where(RFQ.order_id == order_id)
     )).scalars().all()
     rfq = rfq_rows[0] if rfq_rows else None
-    purchaser_view = hides_prices(token.roles)
-
-    # Build the full truth payload (engine runs unfiltered)
-    payload = {
-        "order_id": str(order.id),
-        "status": order.status.value,
-        "margin_pct": float(order.company_margin_pct) if order.company_margin_pct is not None else None,
-        "eta_at_port": order.eta_at_port.isoformat() if order.eta_at_port else None,
-        "lines": [],
-        "subtotal": 0,
-        "customer_facing_subtotal": 0,
-        "note": "Simplified flow: admin applies uniform markup; purchaser approves/rejects entire proposal",
-    }
-
     if rfq:
         payload["margin_pct"] = float(rfq.markup_pct or 0)
         payload["lines"] = [
@@ -359,6 +357,8 @@ async def get_proposal(
                 "used_quantity": item.quantity,
                 "line_total": float(item.quantity * (float(rfq.markup_pct or 0) / 100 + 1) if item.quantity else 0),
                 "customer_facing_total": float(item.quantity * (float(rfq.markup_pct or 0) / 100 + 1) if item.quantity else 0),
+                "decision": "use_full",  # simplified flow: full proposal
+                "lead_time_days": None,
             }
             for item in rfq.items
         ]
@@ -367,6 +367,8 @@ async def get_proposal(
         payload["subtotal"] = float(subtotal)
         payload["customer_facing_subtotal"] = float(customer_facing_subtotal)
         payload["note"] = "Simplified flow: admin applies uniform markup; purchaser approves/rejects entire proposal"
+    else:
+        payload["note"] = "No composed proposal or RFQ found for this order."
 
     # Filter at last — but purchaser MUST see price + qty at proposal review stage.
     # Only strip if this were a sealed-bid catalog view (not proposal approval).

@@ -218,10 +218,10 @@ async def main():
     print("============================================================")
     print("AVS Global — demo accounts seed (idempotent)")
     print("============================================================")
-    print("→ Seeding users")
+    print("-> Seeding users")
     async with async_session_factory() as db:
         await add_users(db)
-    print("→ Seeding suppliers")
+    print("-> Seeding suppliers")
     async with async_session_factory() as db:
         await add_suppliers(db)
     print()

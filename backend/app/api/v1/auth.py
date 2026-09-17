@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 
 from pydantic import BaseModel
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,7 +105,85 @@ async def login(
         user = result.scalar_one_or_none()
     if not user or not verify_password(password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
-    return _token_pair(user)
+    result = _token_pair(user)
+    # Cookie-based auth (supervisor instruction 2026-09-17)
+    response = JSONResponse(content=result)
+    response.set_cookie(
+        key="access_token",
+        value=result["access_token"],
+        httponly=False,
+        secure=False,
+        samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        path="/",
+    )
+    response.set_cookie(
+        key="refresh_token",
+        value=result["refresh_token"],
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=30 * 24 * 3600,
+        path="/",
+    )
+    return response
+
+
+@router.post("/refresh")
+async def refresh(
+    request: Request,
+    db: AsyncSession = Depends(db_session),
+) -> JSONResponse:
+    """Refresh access token via refresh cookie (cookie-based auth, supervisor instruction 2026-09-17)."""
+    refresh_cookie = request.cookies.get("refresh_token")
+    if not refresh_cookie:
+        raise HTTPException(status_code=401, detail="No refresh token provided")
+    try:
+        payload = decode_token(refresh_cookie)
+    except ValueError as e:
+        raise HTTPException(status_code=401, detail=str(e))
+    if payload.get("type") != "refresh":
+        raise HTTPException(status_code=401, detail="Invalid token type")
+    user_id = payload.get("sub")
+    # Eager-load roles + permissions so refreshed token carries full authorization
+    result = await db.execute(
+        select(User)
+        .options(
+            selectinload(User.roles)
+            .selectinload(UserRole.role)
+            .selectinload(Role.permissions)
+            .selectinload(RolePermission.permission)
+        )
+        .where(User.id == UUID(user_id))
+    )
+    user = result.scalar_one_or_none()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    # Issue new token pair
+    new_access = create_access_token(
+        subject=str(user.id),
+        roles=[ur.role.name for ur in user.roles],
+        permissions=sorted({rp.permission.resource + ":" + rp.permission.action + ":" + rp.permission.scope for ur in user.roles for rp in ur.role.permissions}),
+        vessel_id=str(user.vessel_id) if user.vessel_id else None,
+    )
+    new_refresh = create_refresh_token(subject=str(user.id))
+    response = JSONResponse(content={
+        "access_token": new_access,
+        "refresh_token": new_refresh,
+        "token_type": "bearer",
+        "expires_in": settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+    })
+    response.set_cookie(
+        key="access_token", value=new_access,
+        httponly=False, secure=False, samesite="lax",
+        max_age=settings.ACCESS_TOKEN_EXPIRE_MINUTES * 60, path="/",
+    )
+    response.set_cookie(
+        key="refresh_token", value=new_refresh,
+        httponly=True, secure=False, samesite="lax",
+        max_age=30 * 24 * 3600, path="/",
+    )
+    return response
 
 
 @router.get("/me")

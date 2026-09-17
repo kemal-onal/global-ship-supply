@@ -1,0 +1,27 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.12.10, pytest-7.4.4, pluggy-1.6.0
+rootdir: C:\Users\kemal\OneDrive\Masaüstü\mock-up-avs\mock-up-backup\backend
+configfile: pyproject.toml
+testpaths: tests
+plugins: anyio-4.14.2, Faker-22.0.0, asyncio-0.23.3, cov-4.1.0
+asyncio: mode=Mode.AUTO
+collected 285 items
+
+tests\api\test_counter_offer_visibility.py ............                  [  4%]
+tests\api\test_market_sim.py .......                                     [  6%]
+tests\api\test_rbac.py ...........................                       [ 16%]
+tests\api\test_rfq_eligible.py .........                                 [ 19%]
+tests\api\internal\test_ais_ingest.py ..........                         [ 22%]
+tests\market_sim\test_agent.py .............                             [ 27%]
+tests\market_sim\test_engine.py .................                        [ 33%]
+tests\sim\test_backend_client.py .........................               [ 42%]
+tests\sim\test_events.py ..............                                  [ 47%]
+tests\sim\test_geo.py ...............................                    [ 57%]
+tests\sim\test_ports_and_vessels.py .............                        [ 62%]
+tests\sim\test_routes.py .............                                   [ 67%]
+tests\sim\test_runner.py ...............................                 [ 77%]
+tests\sim\test_scenarios.py .....................................        [ 90%]
+tests\sim\test_types.py ............                                     [ 95%]
+tests\sim\test_world.py ..............                                   [100%]
+
+============================= 285 passed in 6.97s =============================

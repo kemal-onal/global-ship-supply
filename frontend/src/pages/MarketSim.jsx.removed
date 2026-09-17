@@ -1,0 +1,874 @@
+/**
+ * Marketplace Simulator — the bid-war view.
+ *
+ * Lives at /market-sim (and deep-links to /market-sim/:rfqId). Lets a
+ * purchasing officer hit a button to spin up a sim, watch the bid
+ * war unfold as a timeline, see the ranked leaderboard with subscore
+ * breakdown, understand "why this winner" via the weighted-stack bar,
+ * play with the what-if weight sliders (which re-runs the same sim
+ * with different weights — but in this MVP we re-fetch), and trigger
+ * a round-2 counter-offer that re-bids in-contention suppliers.
+ *
+ * Role-aware view: `super_admin` and `fleet_admin` see the full
+ * leaderboard (supplier names, prices, subscores, ratings); every
+ * other role sees a sealed-bid shape — ranked "Bidder N" labels
+ * with only the winner's total + lead time + score. The backend
+ * enforces the redaction; the frontend just renders whatever shape
+ * it gets. See `backend/app/services/rfq_serializers.py` for the
+ * source of truth.
+ *
+ * Mirrors the visual language of the rest of the app: rounded-xl
+ * cards, slate borders, dark-mode aware, lucide-react icons.
+ */
+import { useEffect, useMemo, useState } from 'react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Legend,
+  ResponsiveContainer,
+  Scatter,
+  ScatterChart,
+  Tooltip,
+  XAxis,
+  YAxis,
+  ZAxis,
+} from 'recharts'
+import {
+  BriefcaseBusiness,
+  ChevronDown,
+  ChevronRight,
+  Crown,
+  Eye,
+  Gavel,
+  Hand,
+  Loader2,
+  Play,
+  RotateCw,
+  Sliders,
+  Sparkles,
+  Trophy,
+  Zap,
+} from 'lucide-react'
+import toast from 'react-hot-toast'
+
+import { apiGet, apiPost } from '../api/client'
+import { runMarketSim } from '../api/marketSim'
+import { useAuthStore } from '../store/auth'
+
+// Stable palette for supplier chips (round-robin).
+const SUPPLIER_COLORS = [
+  '#3b82f6', // blue
+  '#10b981', // emerald
+  '#f59e0b', // amber
+  '#ec4899', // pink
+  '#8b5cf6', // violet
+  '#14b8a6', // teal
+  '#f43f5e', // rose
+  '#84cc16', // lime
+  '#0ea5e9', // sky
+  '#a855f7', // purple
+]
+
+const STRATEGY_BADGE = {
+  aggressive:      { label: 'Aggressive',  color: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300' },
+  balanced:        { label: 'Balanced',    color: 'bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300' },
+  premium:         { label: 'Premium',     color: 'bg-violet-100 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300' },
+  slow_but_cheap:  { label: 'Slow/Cheap',  color: 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300' },
+}
+
+const EVENT_ICONS = {
+  run_start:    Play,
+  bid_arrived:  Gavel,
+  round_close:  Trophy,
+  counter_offer: Hand,
+  run_end:      Sparkles,
+}
+
+const DEFAULT_WEIGHTS = { price: 0.4, lead_time: 0.2, reliability: 0.2, quality: 0.2 }
+
+// Hand-picked demo weights that make the bid war visually interesting:
+// - "balanced" is the production default (matches compare_quotes).
+// - "price-focused" highlights the cheap supplier.
+// - "reliability-first" flips the winner toward a more expensive but
+//   higher-rated supplier.
+// Each preset is a one-click substitute for the four what-if sliders.
+const WEIGHT_PRESETS = {
+  balanced:        { label: 'Balanced (default)',     weights: { price: 0.4, lead_time: 0.2, reliability: 0.2, quality: 0.2 } },
+  'price-focused': { label: 'Price-focused',          weights: { price: 0.7, lead_time: 0.1, reliability: 0.1, quality: 0.1 } },
+  'speed-first':   { label: 'Lead-time squeeze',      weights: { price: 0.2, lead_time: 0.6, reliability: 0.1, quality: 0.1 } },
+  'quality-first': { label: 'Reliability + quality',  weights: { price: 0.2, lead_time: 0.1, reliability: 0.4, quality: 0.3 } },
+}
+
+export default function MarketSimPage() {
+  const { rfqId: urlRfqId } = useParams()
+  const navigate = useNavigate()
+  const qc = useQueryClient()
+  const hasRole = useAuthStore(s => s.hasRole)
+  // Admins see the unsealed leaderboard. Everyone else (purchaser,
+  // steward, captain, etc.) sees the sealed view: ranked Bidder
+  // labels + winner total/lead time + score ranking only.
+  const sealedBid = !hasRole('super_admin', 'fleet_admin')
+  // The purchaser gets a tighter view than other sealed callers —
+  // the bidder table is collapsed to a one-card winner summary
+  // (see app/services/redaction.py::seal_rfq_award_for_purchaser).
+  // They see only the winner's total + lead time + payment terms.
+  const isPurchaser = hasRole('purchasing_officer')
+
+  // Pull the list of RFQs so the user can pick one (or pick from the
+  // URL deep-link). We surface anything that can be bid on: real RFQs
+  // start in "sent", and the sim auto-promotes closed/awarded to "open".
+  // The only statuses that mean "no bids possible" are cancelled and
+  // expired, which we exclude.
+  const { data: rfqs, isLoading: rfqsLoading } = useQuery({
+    queryKey: ['rfqs-for-sim'],
+    queryFn: () => apiGet('/rfq', { query: { limit: 50 } }),
+  })
+  const openRfqs = useMemo(
+    () => (rfqs || []).filter(r => r.status !== 'cancelled' && r.status !== 'expired'),
+    [rfqs]
+  )
+
+  const [selectedRfqId, setSelectedRfqId] = useState(urlRfqId || '')
+  useEffect(() => {
+    if (urlRfqId) setSelectedRfqId(urlRfqId)
+  }, [urlRfqId])
+
+  const [weights, setWeights] = useState(DEFAULT_WEIGHTS)
+  const [counterOpen, setCounterOpen] = useState(false)
+  const [counterTerms, setCounterTerms] = useState({ lead_days: 3, price_cap: '' })
+  const [presetOpen, setPresetOpen] = useState(false)
+
+  // Re-runnable on demand. We don't auto-poll: a sim is a deliberate
+  // user action.
+  const sim = useMutation({
+    mutationFn: (opts) => runMarketSim(selectedRfqId, {
+      seed: 42,
+      weights,
+      ...opts,
+    }),
+    onSuccess: (data) => {
+      toast.success(`Round ${data.round} complete — ${data.results.length} bid${data.results.length === 1 ? '' : 's'}`)
+      qc.invalidateQueries({ queryKey: ['market-sim', selectedRfqId] })
+    },
+    onError: (e) => toast.error(e.message || 'Sim failed'),
+  })
+
+  const result = sim.data
+  const results = result?.results || []
+  const events = result?.events || []
+  // Winner resolution: backend returns `winner` (uuid) for admin and
+  // `winner_rank` (1 if there's a winner) for sealed callers. We use
+  // whichever is set. The leaderboard row is index 0 in both shapes
+  // because both engines sort by score desc.
+  const winnerIdx = result?.winner
+    ? results.findIndex(r => r.supplier_id === result.winner || r.quote_id === result.winner)
+    : (result?.winner_rank != null ? result.winner_rank - 1 : -1)
+  const winner = winnerIdx >= 0 ? results[winnerIdx] : null
+  const roundN = result?.round
+
+  return (
+    <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-4">
+      {/* ============ Header ============ */}
+      <header className="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-bold flex items-center gap-2">
+            <BriefcaseBusiness className="w-6 h-6" />
+            Marketplace Simulator
+          </h1>
+          <p className="text-slate-500 text-sm">
+            Spin up a sim bid war on an open RFQ. Same supplier pool, deterministic per seed.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <select
+            value={selectedRfqId}
+            onChange={e => {
+              setSelectedRfqId(e.target.value)
+              if (e.target.value) navigate(`/market-sim/${e.target.value}`)
+            }}
+            className="px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm min-w-[280px]"
+          >
+            <option value="">Pick an RFQ…</option>
+            {openRfqs.map(r => (
+              <option key={r.id} value={r.id}>
+                {r.reference} — {r.order_reference}
+              </option>
+            ))}
+          </select>
+          <button
+            onClick={() => sim.mutate({})}
+            disabled={!selectedRfqId || sim.isPending}
+            className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            {sim.isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+            {result ? 'Re-run' : 'Run simulation'}
+          </button>
+
+          {/* Demo preset dropdown — one-click weight configurations for the demo */}
+          <div className="relative">
+            <button
+              onClick={() => setPresetOpen(o => !o)}
+              disabled={!selectedRfqId || sim.isPending}
+              className="px-3 py-2.5 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 text-sm font-medium rounded-lg disabled:opacity-50 inline-flex items-center gap-1.5 border border-slate-200 dark:border-slate-700"
+              title="Apply a demo weight preset (then click Re-run)"
+            >
+              <Sliders className="w-3.5 h-3.5" /> Preset
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {presetOpen && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setPresetOpen(false)} />
+                <div className="absolute right-0 top-full mt-1 w-56 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg shadow-lg z-20 py-1">
+                  <div className="px-3 py-1.5 text-[10px] uppercase tracking-wide text-slate-500 font-semibold">
+                    Demo weight presets
+                  </div>
+                  {Object.entries(WEIGHT_PRESETS).map(([key, { label, weights: w }]) => (
+                    <button
+                      key={key}
+                      onClick={() => {
+                        setWeights(w)
+                        setPresetOpen(false)
+                        // Re-run automatically so the demo flows without
+                        // an extra click.
+                        setTimeout(() => sim.mutate({ weights: w }), 0)
+                      }}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-slate-100 dark:hover:bg-slate-800"
+                    >
+                      <div className="font-medium">{label}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">
+                        P{w.price.toFixed(2)} · L{w.lead_time.toFixed(2)} · R{w.reliability.toFixed(2)} · Q{w.quality.toFixed(2)}
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+          {result && !isPurchaser && (
+            <button
+              onClick={() => setCounterOpen(true)}
+              className="px-4 py-2.5 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg inline-flex items-center gap-2"
+            >
+              <Hand className="w-4 h-4" /> Counter-offer
+            </button>
+          )}
+        </div>
+      </header>
+
+      {!selectedRfqId && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-10 text-center text-slate-500">
+          <BriefcaseBusiness className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+          <p>Pick an RFQ above to run a marketplace sim.</p>
+          {rfqsLoading && <p className="text-xs mt-1">Loading RFQs…</p>}
+          {openRfqs.length === 0 && !rfqsLoading && (
+            <p className="text-xs mt-2 text-slate-400">
+              No open RFQs yet. Go to <a href="/rfq" className="text-blue-600 underline">RFQ & Bidding</a> and create one.
+            </p>
+          )}
+        </div>
+      )}
+
+      {selectedRfqId && !result && !sim.isPending && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-10 text-center text-slate-500">
+          <Play className="w-10 h-10 mx-auto mb-3 text-slate-300" />
+          <p>Click <b>Run simulation</b> to spin up the bid war.</p>
+        </div>
+      )}
+
+      {sim.isPending && (
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-10 text-center text-slate-500">
+          <Loader2 className="w-10 h-10 mx-auto mb-3 text-blue-400 animate-spin" />
+          <p>Simulating bid war…</p>
+        </div>
+      )}
+
+      {result && (
+        <>
+          {/* Purchaser one-card view — the redaction layer
+              collapses the bidder table to a single winner summary
+              (see app/services/redaction.py::seal_rfq_award_for_purchaser).
+              Other sealed callers (chief_steward, vessel_captain) still
+              get the ranked Bidder N leaderboard. */}
+          {isPurchaser && results[0] && (
+            <div className="bg-gradient-to-br from-violet-50 to-blue-50 dark:from-violet-900/20 dark:to-blue-900/20 border border-violet-200 dark:border-violet-800 rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-3">
+                <Crown className="w-5 h-5 text-violet-600" />
+                <h2 className="text-sm font-semibold text-violet-900 dark:text-violet-200">Winning bid</h2>
+              </div>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div>
+                  <div className="text-xs text-slate-500">Total</div>
+                  <div className="text-2xl font-bold text-slate-900 dark:text-white">
+                    {results[0].winner_currency} {parseFloat(results[0].winner_total || 0).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Lead time</div>
+                  <div className="text-2xl font-bold text-slate-900 dark:text-white">
+                    {results[0].winner_lead_days} days
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Payment terms</div>
+                  <div className="text-lg font-semibold text-slate-900 dark:text-white">
+                    {results[0].winner_payment_terms || '—'}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs text-slate-500">Score</div>
+                  <div className="text-2xl font-bold text-slate-900 dark:text-white">
+                    {results[0].winner_score?.toFixed(2) ?? '—'}
+                  </div>
+                </div>
+              </div>
+              <p className="text-xs text-slate-500 mt-3">
+                Supplier identity is sealed — the company will confirm the award.
+              </p>
+            </div>
+          )}
+
+          {/* Status pill row */}
+          <div className="flex items-center gap-2 text-xs flex-wrap">
+            <span className="px-2.5 py-1 rounded-full bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-200 font-semibold inline-flex items-center gap-1">
+              <RotateCw className="w-3 h-3" /> Round {roundN}
+            </span>
+            <span className={`px-2.5 py-1 rounded-full font-semibold ${
+              result.dry_run
+                ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+                : 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
+            }`}>
+              {result.dry_run ? 'Dry run (ephemeral)' : 'Committed'}
+            </span>
+            <span className="px-2.5 py-1 rounded-full bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200 font-semibold">
+              {results.length} bid{results.length === 1 ? '' : 's'}
+            </span>
+            {sealedBid && (
+              <span
+                className="px-2.5 py-1 rounded-full bg-sky-100 text-sky-700 dark:bg-sky-900/40 dark:text-sky-200 font-semibold inline-flex items-center gap-1"
+                title="Supplier identity, per-bidder prices, and reliability/quality scores are hidden until the award is committed by an admin."
+              >
+                <Eye className="w-3 h-3" /> Sealed-bid view
+              </span>
+            )}
+            {winner && !isPurchaser && (
+              <span className="px-2.5 py-1 rounded-full bg-violet-100 text-violet-700 dark:bg-violet-900/40 dark:text-violet-200 font-semibold inline-flex items-center gap-1">
+                <Crown className="w-3 h-3" /> Winner: {winner.supplier_name || winner.label}
+              </span>
+            )}
+          </div>
+
+          {/* ============ 1. Bid-war timeline ============ */}
+          {/* The purchaser's redaction drops the bidder table entirely;
+              skip the timeline + leaderboard for them — they get the
+              one-card winner view rendered above. */}
+          {!isPurchaser && <BidWarTimeline events={events} results={results} sealedBid={sealedBid} />}
+
+          {/* ============ 2. Leaderboard + subscores ============ */}
+          {!isPurchaser && <Leaderboard results={results} winnerId={result.winner} sealedBid={sealedBid} />}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* ============ 3. Why this winner (admin only — needs subscores) ============ */}
+            {!sealedBid && !isPurchaser && (
+              <WhyThisWinner
+                winner={winner}
+                weights={result.weights || weights}
+              />
+            )}
+
+            {/* ============ 4. What-if weight sliders ============ */}
+            {/* Purchasers don't get to re-rank — the comparison is
+                fixed once awarded. Skip the sliders for them. */}
+            {!isPurchaser && (
+              <WhatIfSliders
+                weights={weights}
+                onChange={setWeights}
+                onApply={() => sim.mutate({ weights })}
+                isPending={sim.isPending}
+              />
+            )}
+          </div>
+
+          {/* ============ 5. Price × lead-time scatter (admin only — needs prices) ============ */}
+          {!sealedBid && !isPurchaser && <PriceLeadScatter results={results} winnerId={result.winner} />}
+        </>
+      )}
+
+      {/* ============ Counter-offer modal ============ */}
+      {counterOpen && (
+        <CounterOfferModal
+          initialLead={counterTerms.lead_days}
+          initialPriceCap={counterTerms.price_cap}
+          onClose={() => setCounterOpen(false)}
+          onSubmit={({ lead_days, price_cap }) => {
+            const terms = {}
+            if (lead_days) terms.lead_days = Number(lead_days)
+            // price_cap is a free-text per-product cap, optional; we
+            // support a single cap for the demo (multi-product would
+            // need a row per item).
+            sim.mutate({ counter_offer_terms: terms })
+            setCounterOpen(false)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// =====================================================================
+// Sub-components
+// =====================================================================
+
+function BidWarTimeline({ events, results, sealedBid }) {
+  // Build a supplier-id → color lookup. In sealed view, no event
+  // carries a supplier_id (the serializer drops it), so the color
+  // falls back to a neutral slate for every row.
+  const colorBySupplier = useMemo(() => {
+    const m = {}
+    results.forEach((r, i) => {
+      const key = r.supplier_id || r.quote_id || r.label
+      if (key) m[key] = SUPPLIER_COLORS[i % SUPPLIER_COLORS.length]
+    })
+    return m
+  }, [results])
+
+  if (!events?.length) {
+    return null
+  }
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <Zap className="w-4 h-4" /> Bid-war timeline
+      </h2>
+      <ol className="space-y-1.5">
+        {events.map((e, i) => {
+          const Icon = EVENT_ICONS[e.event_type] || ChevronRight
+          // In sealed view, supplier_id is dropped — use a neutral
+          // color and skip the supplier name. In unsealed view, fall
+          // back to the supplier_id prefix if results doesn't carry
+          // the name (race with a stale cache, etc.).
+          const lookupKey = e.supplier_id || e.quote_id
+          const color = lookupKey ? (colorBySupplier[lookupKey] || '#64748b') : '#64748b'
+          const isBid = e.event_type === 'bid_arrived'
+          const strategy = isBid ? STRATEGY_BADGE[e.payload?.strategy] : null
+          const isRedactedCounterOffer =
+            e.event_type === 'counter_offer' && e.payload?.redacted === true
+          return (
+            <li
+              key={e.id || i}
+              className="flex items-start gap-3 px-3 py-2 rounded-lg hover:bg-slate-50 dark:hover:bg-slate-800/50"
+            >
+              <div
+                className="mt-0.5 w-7 h-7 rounded-full flex items-center justify-center text-white text-xs font-semibold flex-shrink-0"
+                style={{ backgroundColor: color }}
+              >
+                <Icon className="w-3.5 h-3.5" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs font-mono text-slate-500">
+                    {new Date(e.ts).toLocaleTimeString()}
+                  </span>
+                  <span className="text-xs font-semibold capitalize">
+                    {e.event_type.replace('_', ' ')}
+                  </span>
+                  {e.supplier_id && !sealedBid && (
+                    <span className="text-xs text-slate-600 dark:text-slate-300 truncate">
+                      {results.find(r => r.supplier_id === e.supplier_id)?.supplier_name || e.supplier_id.slice(0, 8)}
+                    </span>
+                  )}
+                  {strategy && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${strategy.color}`}>
+                      {strategy.label}
+                    </span>
+                  )}
+                </div>
+                {isBid && (
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    ${Number(e.payload?.adjusted_total || 0).toFixed(2)} · {e.payload?.lead_time_days}d lead
+                  </div>
+                )}
+                {e.event_type === 'counter_offer' && !isRedactedCounterOffer && (
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {JSON.stringify(e.payload)}
+                  </div>
+                )}
+                {isRedactedCounterOffer && (
+                  <div
+                    className="text-xs text-slate-500 mt-0.5 inline-flex items-center gap-1.5"
+                    title="Counter-offer terms are classified procurement information. They are visible only to the winning supplier."
+                  >
+                    <Eye className="w-3 h-3" /> {e.payload?.summary || 'Counter-offer sent to winner'}
+                  </div>
+                )}
+                {e.event_type === 'round_close' && (
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {e.payload?.results?.length || 0} bid{e.payload?.results?.length === 1 ? '' : 's'} scored
+                  </div>
+                )}
+              </div>
+            </li>
+          )
+        })}
+      </ol>
+    </div>
+  )
+}
+
+function Leaderboard({ results, winnerId, sealedBid }) {
+  if (!results?.length) return null
+  // Subscore bar data: one row per supplier, with 4 stacked fields.
+  // Only built when we're in the unsealed view — sealed callers get
+  // a flat "Bidder N → score" list and the subscore bar is hidden.
+  const chartData = sealedBid
+    ? null
+    : results.map(r => ({
+        name: r.supplier_name,
+        price: r.subscores?.price ?? 0,
+        lead_time: r.subscores?.lead_time ?? 0,
+        reliability: r.subscores?.reliability ?? 0,
+        quality: r.subscores?.quality ?? 0,
+        score: r.score,
+        isWinner: r.supplier_id === winnerId,
+      }))
+
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <Trophy className="w-4 h-4" /> Leaderboard
+      </h2>
+      <div className={`grid grid-cols-1 gap-4 ${sealedBid ? '' : 'lg:grid-cols-3'}`}>
+        <div className={`overflow-x-auto ${sealedBid ? '' : 'lg:col-span-1'}`}>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-xs text-slate-500">
+                <th className="px-2 py-2 text-left font-semibold">#</th>
+                <th className="px-2 py-2 text-left font-semibold">
+                  {sealedBid ? 'Bidder' : 'Supplier'}
+                </th>
+                <th className="px-2 py-2 text-right font-semibold">Total</th>
+                <th className="px-2 py-2 text-right font-semibold">Lead</th>
+                <th className="px-2 py-2 text-right font-semibold">Score</th>
+              </tr>
+            </thead>
+            <tbody>
+              {results.map((r, i) => {
+                // In sealed view, the winner is the row with `rank === 1`.
+                // In unsealed view, it's the row whose supplier_id matches
+                // the response's `winner` field.
+                const isWinner = sealedBid
+                  ? r.rank === 1
+                  : r.supplier_id === winnerId
+                return (
+                  <tr
+                    key={r.supplier_id || r.quote_id || r.label || i}
+                    className={`border-t border-slate-100 dark:border-slate-800 ${
+                      isWinner
+                        ? 'bg-violet-50 dark:bg-violet-900/20'
+                        : ''
+                    }`}
+                  >
+                    <td className="px-2 py-2 text-slate-400 font-mono text-xs">
+                      {sealedBid ? r.rank : i + 1}
+                    </td>
+                    <td className="px-2 py-2 font-medium">
+                      {isWinner && (
+                        <Crown className="w-3.5 h-3.5 inline-block mr-1 text-amber-500" />
+                      )}
+                      {sealedBid ? r.label : r.supplier_name}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono">
+                      {r.total == null
+                        ? <span className="text-slate-300 dark:text-slate-600">—</span>
+                        : `$${Number(r.total).toFixed(2)}`}
+                    </td>
+                    <td className="px-2 py-2 text-right text-slate-500">
+                      {r.lead_time_days == null
+                        ? <span className="text-slate-300 dark:text-slate-600">—</span>
+                        : `${r.lead_time_days}d`}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono font-semibold">
+                      {Number(r.score).toFixed(4)}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+        {/* Subscore bar — admin-only. The subscore breakdown would
+            leak reliability/quality ratings, which is exactly what
+            the sealed view is supposed to hide. */}
+        {!sealedBid && (
+          <div className="lg:col-span-2 h-64">
+            <ResponsiveContainer>
+              <BarChart data={chartData} layout="vertical" margin={{ left: 20, right: 30, top: 8, bottom: 8 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+                <XAxis type="number" domain={[0, 1]} tick={{ fontSize: 11 }} />
+                <YAxis
+                  type="category"
+                  dataKey="name"
+                  width={120}
+                  tick={{ fontSize: 11 }}
+                />
+                <Tooltip
+                  contentStyle={{ fontSize: 12 }}
+                  formatter={(v, k) => [Number(v).toFixed(3), k]}
+                />
+                <Legend wrapperStyle={{ fontSize: 11 }} />
+                <Bar dataKey="price"        stackId="a" fill="#3b82f6" />
+                <Bar dataKey="lead_time"    stackId="a" fill="#10b981" />
+                <Bar dataKey="reliability"  stackId="a" fill="#f59e0b" />
+                <Bar dataKey="quality"      stackId="a" fill="#ec4899" />
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function WhyThisWinner({ winner, weights }) {
+  if (!winner) {
+    return (
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+        <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+          <Crown className="w-4 h-4" /> Why this winner
+        </h2>
+        <p className="text-sm text-slate-500">No winner yet — run a sim first.</p>
+      </div>
+    )
+  }
+  const w = weights || DEFAULT_WEIGHTS
+  // The actual contribution: weight × subscore.
+  const contributions = [
+    { k: 'Price',       v: w.price * (winner.subscores?.price ?? 0),       color: '#3b82f6' },
+    { k: 'Lead time',   v: w.lead_time * (winner.subscores?.lead_time ?? 0), color: '#10b981' },
+    { k: 'Reliability', v: w.reliability * (winner.subscores?.reliability ?? 0), color: '#f59e0b' },
+    { k: 'Quality',     v: w.quality * (winner.subscores?.quality ?? 0),     color: '#ec4899' },
+  ]
+  const total = contributions.reduce((s, c) => s + c.v, 0)
+
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <Crown className="w-4 h-4" /> Why {winner.supplier_name} won
+      </h2>
+      <p className="text-xs text-slate-500 mb-3">
+        Score = Σ (weight × subscore). The current weights sum to{' '}
+        {Object.values(w).reduce((s, v) => s + Number(v || 0), 0).toFixed(2)}.
+      </p>
+      <div className="space-y-2">
+        {contributions.map(c => (
+          <div key={c.k} className="flex items-center gap-2 text-xs">
+            <div className="w-24 text-slate-600 dark:text-slate-300">{c.k}</div>
+            <div className="flex-1 h-2 bg-slate-100 dark:bg-slate-800 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full"
+                style={{
+                  width: `${(c.v / Math.max(total, 1e-9)) * 100}%`,
+                  backgroundColor: c.color,
+                }}
+              />
+            </div>
+            <div className="w-20 text-right font-mono">
+              {c.v.toFixed(3)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-sm">
+        <span className="text-slate-500">Total score</span>
+        <span className="font-mono font-semibold">{Number(winner.score).toFixed(4)}</span>
+      </div>
+    </div>
+  )
+}
+
+function WhatIfSliders({ weights, onChange, onApply, isPending }) {
+  const sum = Object.values(weights).reduce((s, v) => s + Number(v || 0), 0)
+  const setW = (k, v) => onChange({ ...weights, [k]: Number(v) })
+
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-3 flex items-center gap-2">
+        <Sliders className="w-4 h-4" /> What-if weights
+        <span className={`ml-auto text-xs ${Math.abs(sum - 1) < 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+          Σ = {sum.toFixed(2)}
+        </span>
+      </h2>
+      <div className="space-y-2.5">
+        {[
+          { k: 'price',       label: 'Price' },
+          { k: 'lead_time',   label: 'Lead time' },
+          { k: 'reliability', label: 'Reliability' },
+          { k: 'quality',     label: 'Quality' },
+        ].map(({ k, label }) => (
+          <div key={k} className="flex items-center gap-3 text-xs">
+            <div className="w-24 text-slate-600 dark:text-slate-300">{label}</div>
+            <input
+              type="range"
+              min="0"
+              max="1"
+              step="0.05"
+              value={weights[k]}
+              onChange={e => setW(k, e.target.value)}
+              className="flex-1 accent-blue-600"
+            />
+            <div className="w-12 text-right font-mono">{Number(weights[k]).toFixed(2)}</div>
+          </div>
+        ))}
+      </div>
+      <button
+        onClick={onApply}
+        disabled={isPending}
+        className="mt-4 w-full px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white text-sm font-medium rounded-lg disabled:opacity-50 inline-flex items-center justify-center gap-2"
+      >
+        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+        Re-rank with these weights
+      </button>
+    </div>
+  )
+}
+
+function PriceLeadScatter({ results, winnerId }) {
+  if (!results?.length) return null
+  const data = results.map(r => ({
+    name: r.supplier_name,
+    x: Number(r.total),
+    y: r.lead_time_days,
+    z: (r.subscores?.reliability ?? 0) * 100,
+    isWinner: r.supplier_id === winnerId,
+  }))
+  return (
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl p-5">
+      <h2 className="text-sm font-semibold mb-3">Price × lead-time scatter</h2>
+      <div className="h-72">
+        <ResponsiveContainer>
+          <ScatterChart margin={{ left: 20, right: 20, top: 10, bottom: 10 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <XAxis
+              type="number"
+              dataKey="x"
+              name="Total"
+              tickFormatter={(v) => `$${v.toFixed(0)}`}
+              tick={{ fontSize: 11 }}
+              label={{ value: 'Total ($)', position: 'insideBottom', offset: -5, fontSize: 11 }}
+            />
+            <YAxis
+              type="number"
+              dataKey="y"
+              name="Lead"
+              unit="d"
+              tick={{ fontSize: 11 }}
+              label={{ value: 'Lead (days)', angle: -90, position: 'insideLeft', fontSize: 11 }}
+            />
+            <ZAxis type="number" dataKey="z" range={[60, 400]} />
+            <Tooltip
+              contentStyle={{ fontSize: 12 }}
+              formatter={(v, k) => k === 'x' ? [`$${Number(v).toFixed(2)}`, 'Total'] : [v, k]}
+              labelFormatter={(_, payload) => payload?.[0]?.payload?.name}
+            />
+            <Scatter data={data}>
+              {data.map((d, i) => (
+                <Cell
+                  key={i}
+                  fill={d.isWinner ? '#a855f7' : '#3b82f6'}
+                  fillOpacity={d.isWinner ? 1 : 0.6}
+                />
+              ))}
+            </Scatter>
+          </ScatterChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="text-[11px] text-slate-500 mt-1">
+        Purple = winner. Bubble size = reliability subscore.
+      </p>
+    </div>
+  )
+}
+
+function CounterOfferModal({ initialLead, initialPriceCap, onClose, onSubmit }) {
+  const [leadDays, setLeadDays] = useState(initialLead || '')
+  const [priceCap, setPriceCap] = useState(initialPriceCap || '')
+
+  // One-click demo presets for the counter-offer. The 3-day squeeze is
+  // the most reliable for the demo (forces in-contention re-bid).
+  const offerPresets = [
+    { label: '3-day squeeze (demo)',  lead_days: 3 },
+    { label: '5-day squeeze',         lead_days: 5 },
+    { label: 'Strict — 2 days',       lead_days: 2 },
+  ]
+
+  return (
+    <div className="fixed inset-0 z-30 flex items-center justify-center bg-black/40">
+      <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-xl shadow-xl w-full max-w-md p-5">
+        <h2 className="text-base font-bold mb-1">Counter-offer</h2>
+        <p className="text-xs text-slate-500 mb-4">
+          Squeeze the round-1 contenders into a round-2 re-bid. Lead-time cap is the most
+          useful in the demo.
+        </p>
+
+        <div className="mb-4">
+          <div className="text-[10px] uppercase tracking-wide text-slate-500 font-semibold mb-1.5">
+            Demo offers
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {offerPresets.map(p => (
+              <button
+                key={p.label}
+                onClick={() => { setLeadDays(p.lead_days); setPriceCap('') }}
+                className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 rounded-md border border-slate-200 dark:border-slate-700"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <label className="block text-sm">
+            <span className="text-slate-600 dark:text-slate-300">New lead-time target (days)</span>
+            <input
+              type="number"
+              min="1"
+              value={leadDays}
+              onChange={e => setLeadDays(e.target.value)}
+              className="mt-1 w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="text-slate-600 dark:text-slate-300">Price cap (optional, single product)</span>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              value={priceCap}
+              onChange={e => setPriceCap(e.target.value)}
+              className="mt-1 w-full px-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm"
+            />
+          </label>
+        </div>
+        <div className="flex items-center justify-end gap-2 mt-5">
+          <button
+            onClick={onClose}
+            className="px-3 py-2 text-sm text-slate-600 hover:text-slate-900"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => onSubmit({ lead_days: leadDays, price_cap: priceCap })}
+            disabled={!leadDays && !priceCap}
+            className="px-4 py-2 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg disabled:opacity-50 inline-flex items-center gap-2"
+          >
+            <Hand className="w-4 h-4" /> Send counter-offer
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}

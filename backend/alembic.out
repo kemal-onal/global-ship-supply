@@ -1,0 +1,11 @@
+﻿python.exe : INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
+At line:1 char:376
++ ... p\backend"; & ".\.venv\Scripts\python.exe" -m alembic upgrade head 2> ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO  [alembic....PostgresqlImpl.:String) [], RemoteExc 
+   eption
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO  [alembic.runtime.migration] Will assume transactional DDL.
+INFO  [alembic.runtime.migration] Running upgrade 0003_market_sim_events -> 0004_market_sim_event_vis
+ibility, market_sim_event_visibility

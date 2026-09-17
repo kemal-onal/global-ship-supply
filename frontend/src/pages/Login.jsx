@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Anchor, Eye, EyeOff, Loader2, LockKeyhole, Mail, Ship, Wifi, ShieldCheck, Globe } from 'lucide-react'
 import toast from 'react-hot-toast'
 
-import { apiPost } from '../api/client'
+import { apiPost, apiGet } from '../api/client'
 import { useAuthStore } from '../store/auth'
 
 export default function LoginPage() {
@@ -17,20 +17,14 @@ export default function LoginPage() {
     e.preventDefault()
     setLoading(true)
     try {
-      // OAuth2 form-urlencoded
-      const body = new URLSearchParams({ username: email, password, grant_type: 'password' })
-      const r = await fetch('/api/v1/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body,
-      })
-      const data = await r.json()
-      if (!r.ok) throw new Error(data.detail || 'Login failed')
-      setTokens({ accessToken: data.access_token, refreshToken: data.refresh_token })
-      setUser(data.user)
-      toast.success(`Welcome back, ${data.user.full_name || data.user.email}`)
+      const r = await apiPost('/auth/login', { username: email, password })
+      setTokens({ accessToken: r.access_token, refreshToken: r.refresh_token })
+      // Login response has no user info — fetch it from /auth/me
+      const userData = await apiGet('/auth/me')
+      setUser(userData)
+      toast.success(`Welcome back, ${userData.full_name || userData.email}`)
     } catch (err) {
-      toast.error(err.message)
+      toast.error(typeof err.message === 'string' ? err.message : 'Login failed')
     } finally {
       setLoading(false)
     }

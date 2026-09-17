@@ -48,7 +48,7 @@ class Port:
     lon: float
 
     def __post_init__(self) -> None:
-        if not (5 <= len(self.un_locode) == 5):
+        if not (len(self.un_locode) == 5):
             raise ValueError(f"Invalid UN/LOCODE: {self.un_locode!r}")
         if not (-90.0 <= self.lat <= 90.0):
             raise ValueError(f"Invalid latitude: {self.lat}")

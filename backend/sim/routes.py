@@ -98,11 +98,6 @@ def build_route(
         waypoints.append(Waypoint(lat=lat, lon=lon, eta=eta))
         prev_lat, prev_lon = lat, lon
 
-    # Always end at the destination.
-    waypoints.append(Waypoint(lat=destination.lat, lon=destination.lon,
-                              eta=depart_at + timedelta(seconds=duration_h * 3600.0)
-                              if depart_at is not None else None))
-
     return Route(
         origin=origin,
         destination=destination,

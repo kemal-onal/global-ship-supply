@@ -479,7 +479,12 @@ const canSendToSuppliers = isAdmin
                   available to admins, and only when no
                   clarifications are unresolved. */}
             </div>
-            {/* Final offer: purchaser approves/rejects the proposal directly from here */}
+            {/* Final offer: purchaser approves/rejects the proposal directly from here.
+                Note: this panel exists even when a composed proposal is present (from
+                /marketplace compose or legacy RFQ close) because the approval/reject
+                action lives in the order's RFQ pipeline — it's the purchaser-facing
+                surface for the final decision, not a duplicate proposal view.
+                — marked: will be checked. */}
             {(order?.status === 'rfq_closed' || order?.status === 'awaiting_purchaser_approval') && (
               <div className="mb-3 p-4 bg-violet-50 dark:bg-violet-900/20 border border-violet-200 dark:border-violet-800 rounded-xl">
                 <div className="text-sm font-semibold text-violet-800 dark:text-violet-300 mb-1">Final Offer</div>

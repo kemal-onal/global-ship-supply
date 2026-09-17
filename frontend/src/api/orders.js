@@ -4,7 +4,7 @@
 // suppliers" button on the order page. The list / detail
 // endpoints are still used directly from the page (apiGet
 // inline) for now; only the action endpoints live here.
-import { apiPost } from './client'
+import { apiPost, apiPatch } from './client'
 
 /**
  * Admin: send the order to suppliers (fan-out + ETA/ETD
@@ -17,5 +17,20 @@ import { apiPost } from './client'
  * @param {string} orderId
  */
 export function sendOrderToSuppliers(orderId) {
-  return apiPost(`/rfq/for-order/${orderId}`)
+  // Fixed: button now hits working simplified endpoint (backup only; for_git untouched)
+  return apiPost(`/marketplace/rfqs/${orderId}/send`)
+}
+
+/**
+ * Purchaser: edit a draft order's line items and order-level fields.
+ * PATCH /api/v1/orders/{orderId}
+ *
+ * Body shape: { customer_notes?, internal_notes?, priority?, required_by?, items?[] }
+ * Each item: { id, impa_code?, quantity?, unit?, notes?, description? }
+ *
+ * @param {string} orderId
+ * @param {object} payload
+ */
+export function saveOrderItems(orderId, payload) {
+  return apiPatch(`/orders/${orderId}`, payload)
 }

@@ -262,6 +262,7 @@ async def run_loop(
     stop_event = stop_event or asyncio.Event()
 
     stats = Stats()
+    ticks_since_flush = 0
     next_deadline = time.monotonic()
 
     while not stop_event.is_set():
@@ -276,6 +277,7 @@ async def run_loop(
                 stats.events_emitted += 1
 
         stats.ticks += 1
+        ticks_since_flush += 1
 
         # 2. Flush if the batch is full OR the flush interval has
         #    elapsed. We use the *config's* tick_seconds as the
@@ -283,13 +285,13 @@ async def run_loop(
         #    under sim_time_scale).
         interval_elapsed = (
             flush_interval_seconds <= 0
-            or stats.ticks * tick_seconds >= flush_interval_seconds
+            or ticks_since_flush * tick_seconds >= flush_interval_seconds
         )
         if batch.is_full() or (interval_elapsed and not batch.is_empty()):
             await _flush(batch, client, dry_run, log, stats)
             # Reset the interval baseline: we only count ticks
             # *since the last flush* toward the next interval.
-            interval_elapsed = False
+            ticks_since_flush = 0
 
         # 3. Pace to the next tick. Deadline-based, not
         #    sleep-based, so we don't drift under load.

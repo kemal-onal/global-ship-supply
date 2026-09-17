@@ -12,24 +12,20 @@ let refreshPromise = null;
 
 async function refreshAccessToken() {
   if (refreshPromise) return refreshPromise;
-  const { refreshToken, setTokens, clear } = useAuthStore.getState();
-  if (!refreshToken) {
-    clear();
-    throw new Error('No refresh token');
-  }
   refreshPromise = (async () => {
     try {
+      // Cookie-based refresh: cookie travels automatically with credentials: include
       const r = await fetch(`${BASE}/auth/refresh`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ refresh_token: refreshToken }),
+        credentials: 'include',
       });
       if (!r.ok) {
-        clear();
+        useAuthStore.getState().clear();
         throw new Error('Refresh failed');
       }
       const data = await r.json();
-      setTokens({ accessToken: data.access_token, refreshToken: data.refresh_token });
+      useAuthStore.getState().setTokens({ accessToken: data.access_token, refreshToken: data.refresh_token });
       return data.access_token;
     } finally {
       refreshPromise = null;
@@ -68,6 +64,7 @@ export async function api(path, { method = 'GET', body, query, headers = {}, sig
       headers: h,
       body: body ? JSON.stringify(body) : undefined,
       signal,
+      credentials: 'include',
     });
   };
 

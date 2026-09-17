@@ -84,6 +84,9 @@
   catering & RFQ, the Figma design system, the marketplace simulator,
   the sealed-bid / counter-offer classification model, and the
   marketplace redesign (fan-out, per-line decision, 24h window).
+- **[`docs/auth-cookie-migration.md`](./docs/auth-cookie-migration.md)** — cookie-based JWT auth migration (supervisor instruction 2026-09-17, Fix A: cookie refresh with full roles).
+- **[`possible_bugs.md`](./possible_bugs.md)** — 12 unsolved bugs documented 2026-09-17 (0 fixes applied today); P2 design tensions verified.
+- **[`WORK_SUMMARY_2026-09-17.md`](./WORK_SUMMARY_2026-09-17.md)** — session work summary: P1 fixes (#1-6 verified), cookie auth migration, P3 fixes/docs, new bugs.
 - **[`LICENSE`](./LICENSE)** — MIT.
 - **Demo accounts** are listed in
   [Quickstart → Demo accounts](#demo-accounts-seeded) below.

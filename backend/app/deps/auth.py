@@ -38,14 +38,18 @@ async def get_current_token(
     request: Request,
     token: Annotated[str | None, Depends(oauth2_scheme)],
 ) -> TokenData:
-    if not token:
+    # Cookie-based auth (supervisor instruction 2026-09-17): read from cookie first,
+    # fall back to Authorization Bearer header for backward compatibility.
+    cookie_token = request.cookies.get("access_token")
+    effective_token = cookie_token or token
+    if not effective_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        payload = decode_token(token)
+        payload = decode_token(effective_token)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -64,18 +68,21 @@ CurrentToken = Annotated[TokenData, Depends(get_current_token)]
 
 
 async def get_current_user(
+    request: Request,
     db: AsyncSession = Depends(db_session),
     token: Annotated[str | None, Depends(oauth2_scheme)] = Depends(oauth2_scheme),
 ) -> User:
-    """Get the current authenticated user from the JWT token."""
-    if not token:
+    """Get the current authenticated user from the JWT token (cookie or header)."""
+    cookie_token = request.cookies.get("access_token")
+    effective_token = cookie_token or token
+    if not effective_token:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
     try:
-        payload = decode_token(token)
+        payload = decode_token(effective_token)
     except ValueError as e:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
